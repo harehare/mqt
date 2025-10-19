@@ -6,6 +6,8 @@
 
 Interactive terminal interface for querying and manipulating Markdown content
 
+![demo](./assets/demo.gif)
+
 </div>
 
 ## Overview
