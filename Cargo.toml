@@ -8,7 +8,7 @@ license = "MIT"
 name = "mq-tui"
 readme = "README.md"
 repository = "https://github.com/harehare/mq-tui"
-version = "0.1.5"
+version = "0.1.6"
 
 [dependencies]
 arboard = {version = "3.6.1", default-features = false}
@@ -17,8 +17,8 @@ crossterm = "0.29.0"
 itertools = "0.14.0"
 log = "0.4.29"
 miette = {version = "7.6.0", features = ["fancy"]}
-mq-lang = "0.5.8"
-mq-markdown = "0.5.8"
+mq-lang = "0.5.9"
+mq-markdown = "0.5.9"
 ratatui = "0.30.0"
 unicode-width = "0.2.2"
 
@@ -32,4 +32,3 @@ strip = true
 [package.metadata.binstall]
 pkg-fmt = "bin"
 pkg-url = "{ repo }/releases/download/v{ version }/mq-tui-{ target }{ binary-ext }"
-
