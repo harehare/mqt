@@ -13,7 +13,7 @@ version = "0.1.8"
 
 [dependencies]
 arboard = {version = "3.6.1", default-features = false}
-clap = {version = "4.5.54", features = ["derive"]}
+clap = {version = "4.5.55", features = ["derive"]}
 crossterm = "0.29.0"
 itertools = "0.14.0"
 log = "0.4.29"
