@@ -93,7 +93,7 @@ impl TreeItem {
                 }
             }
             Node::HorizontalRule(_) => "Horizontal Rule".to_string(),
-            Node::TableHeader(_) => "Table Header".to_string(),
+            Node::TableAlign(_) => "Table Header".to_string(),
             Node::TableRow(_) => "Table Row".to_string(),
             Node::TableCell(_) => "Table Cell".to_string(),
             Node::Break(_) => "Line Break".to_string(),
@@ -511,8 +511,6 @@ mod tests {
                 values: vec![],
                 column: 0,
                 row: 0,
-                last_cell_in_row: false,
-                last_cell_of_in_table: false,
                 position: None,
             })],
             position: None,
@@ -523,8 +521,6 @@ mod tests {
             values: vec![create_test_text()],
             column: 0,
             row: 0,
-            last_cell_in_row: false,
-            last_cell_of_in_table: false,
             position: None,
         });
         assert!(TreeItem::has_children(&table_cell_with_content));
@@ -731,8 +727,6 @@ mod tests {
             values: vec![],
             column: 0,
             row: 0,
-            last_cell_in_row: false,
-            last_cell_of_in_table: false,
             position: None,
         });
         assert_eq!(TreeItem::create_display_text(&table_cell), "Table Cell");
@@ -993,8 +987,6 @@ mod tests {
                 values: vec![create_test_text()],
                 column: 0,
                 row: 0,
-                last_cell_in_row: false,
-                last_cell_of_in_table: false,
                 position: None,
             })],
             position: None,
@@ -1008,8 +1000,6 @@ mod tests {
             values: vec![create_test_text()],
             column: 0,
             row: 0,
-            last_cell_in_row: false,
-            last_cell_of_in_table: false,
             position: None,
         });
         let table_cell_item = TreeItem::new(table_cell, 0, 0);
