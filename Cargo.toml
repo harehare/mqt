@@ -18,8 +18,8 @@ crossterm = "0.29.0"
 itertools = "0.14.0"
 log = "0.4.29"
 miette = {version = "7.6.0", features = ["fancy"]}
-mq-lang = "0.5.13"
-mq-markdown = "0.5.13"
+mq-lang = "0.5.14"
+mq-markdown = "0.5.14"
 ratatui = "0.30.0"
 unicode-width = "0.2.2"
 
