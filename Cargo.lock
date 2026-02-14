@@ -369,6 +369,8 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
+ "filedescriptor",
+ "futures-core",
  "mio",
  "parking_lot",
  "rustix",
@@ -682,6 +684,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures-core"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05f29059c0c2090612e8d742178b0580d2dc940c837851ad723096f87af6663e"
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -905,9 +913,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "libc"
-version = "0.2.180"
+version = "0.2.182"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcc35a38544a891a5f7c865aca548a982ccb3b8650a5b06d0fd33a10283c56fc"
+checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
 
 [[package]]
 name = "libredox"
@@ -1080,9 +1088,9 @@ dependencies = [
 
 [[package]]
 name = "mq-lang"
-version = "0.5.14"
+version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a80a99657c60054e2adbe11e1d309bbe4fdbce23208d515d51c3dcc1ba52e3d3"
+checksum = "14baf8887f45781babc74fa155a9e379a23faa18f926c0b8e00166ef3c8e4d59"
 dependencies = [
  "base64",
  "chrono",
@@ -1103,9 +1111,9 @@ dependencies = [
 
 [[package]]
 name = "mq-markdown"
-version = "0.5.14"
+version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b485eed281ad05d4520d2043e5620919ece238c095315c7182a015177af3a143"
+checksum = "b98b6fe2067215b6ae65eb4dd38159b6530d7aab71cafcabf5c8808b89f16997"
 dependencies = [
  "ego-tree",
  "itertools",
@@ -1119,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "mq-tui"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "arboard",
  "clap",
