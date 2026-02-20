@@ -200,7 +200,7 @@ impl App {
                         }
                         self.update_sidebar_selection();
                     } else if !self.results.is_empty() {
-                        self.selected_idx = (self.selected_idx + 1) % self.results.len();
+                        self.selected_idx = self.next_visible_from_current(true);
                     }
                 }
                 (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
@@ -210,11 +210,7 @@ impl App {
                         }
                         self.update_sidebar_selection();
                     } else if !self.results.is_empty() {
-                        self.selected_idx = if self.selected_idx > 0 {
-                            self.selected_idx - 1
-                        } else {
-                            self.results.len() - 1
-                        };
+                        self.selected_idx = self.next_visible_from_current(false);
                     }
                 }
                 // Select header in sidebar (Enter key - content already updated by navigation)
@@ -224,22 +220,25 @@ impl App {
                 }
                 (KeyCode::PageDown, _) => {
                     if !self.results.is_empty() {
-                        self.selected_idx = (self.selected_idx + 10).min(self.results.len() - 1);
+                        let next = (self.selected_idx + 10).min(self.results.len() - 1);
+                        self.selected_idx = self.next_visible(next, true);
                     }
                 }
                 (KeyCode::PageUp, _) => {
                     if !self.results.is_empty() {
-                        self.selected_idx = self.selected_idx.saturating_sub(10);
+                        let prev = self.selected_idx.saturating_sub(10);
+                        self.selected_idx = self.next_visible(prev, false);
                     }
                 }
                 (KeyCode::Home, _) => {
                     if !self.results.is_empty() {
-                        self.selected_idx = 0;
+                        self.selected_idx = self.next_visible(0, true);
                     }
                 }
                 (KeyCode::End, _) => {
                     if !self.results.is_empty() {
-                        self.selected_idx = self.results.len() - 1;
+                        let last = self.results.len() - 1;
+                        self.selected_idx = self.next_visible(last, false);
                     }
                 }
                 // Clear query with Ctrl+L
@@ -589,6 +588,11 @@ impl App {
             };
         }
 
+        // Advance past invisible nodes (nodes that render to nothing in combined output)
+        if !self.results.is_empty() {
+            self.selected_idx = self.next_visible(self.selected_idx, true);
+        }
+
         self.last_exec_time = start.elapsed();
         self.last_exec = Instant::now();
     }
@@ -695,6 +699,103 @@ impl App {
     /// Toggle tree sidebar visibility
     pub fn toggle_tree_sidebar(&mut self) {
         self.show_tree_sidebar = !self.show_tree_sidebar;
+    }
+
+    /// Move to next/previous visible node from current position.
+    /// This skips invisible nodes until finding a visible one.
+    fn next_visible_from_current(&self, forward: bool) -> usize {
+        let len = self.results.len();
+        if len == 0 {
+            return 0;
+        }
+        
+        let start_idx = self.selected_idx;
+        
+        // Calculate the current rendered line position
+        let current_line = if start_idx == 0 {
+            0
+        } else {
+            Markdown::new(self.results[..start_idx + 1].to_vec())
+                .to_string()
+                .lines()
+                .count()
+                .saturating_sub(
+                    Markdown::new(vec![self.results[start_idx].clone()])
+                        .to_string()
+                        .lines()
+                        .count()
+                        .max(1)
+                )
+        };
+        
+        // Find next node that renders to a different line position
+        let mut idx = start_idx;
+        for _ in 0..len {
+            // Move to next/previous position
+            if forward {
+                idx = (idx + 1) % len;
+            } else {
+                idx = if idx == 0 { len - 1 } else { idx - 1 };
+            }
+            
+            // Check if this node is visible (renders to non-empty content)
+            let rendered = Markdown::new(vec![self.results[idx].clone()])
+                .to_string();
+            if !rendered.trim().is_empty() {
+                // Calculate the line position of this node
+                let node_line = if idx == 0 {
+                    0
+                } else {
+                    Markdown::new(self.results[..idx + 1].to_vec())
+                        .to_string()
+                        .lines()
+                        .count()
+                        .saturating_sub(rendered.lines().count().max(1))
+                };
+                
+                // Return this node if it's at a different line position
+                if node_line != current_line {
+                    return idx;
+                }
+            }
+        }
+        
+        start_idx // No different position found, stay put
+    }
+
+    /// Find the nearest visible result index from `start`, searching in `forward` direction.
+    /// A node is invisible when `render_with_theme` skips it (renders to "" or only whitespace).
+    /// Returns `start` unchanged if all results are invisible.
+    fn next_visible(&self, start: usize, forward: bool) -> usize {
+        let len = self.results.len();
+        if len == 0 {
+            return 0;
+        }
+        let mut idx = start;
+        let mut checked = 0;
+        
+        while checked < len {
+            let rendered = Markdown::new(vec![self.results[idx].clone()])
+                .to_string();
+            
+            // A node is visible if it renders to non-empty, non-whitespace content
+            // We need to check both the raw length and trimmed length
+            let is_visible = !rendered.trim().is_empty();
+            
+            if is_visible {
+                return idx;
+            }
+            
+            // Move to next position
+            if forward {
+                idx = (idx + 1) % len;
+            } else {
+                idx = if idx == 0 { len - 1 } else { idx - 1 };
+            }
+            checked += 1;
+        }
+        
+        start // all invisible: stay put
     }
 }
 #[cfg(test)]
