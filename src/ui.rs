@@ -135,13 +135,40 @@ fn draw_results_list(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    // Use the combined render for display so that blank lines between nodes are
+    // preserved exactly as they appear in the source (render_with_theme uses
+    // source positions to decide inter-node spacing).
+    //
+    // To compute the correct scroll position (selected_line), render the prefix
+    // nodes[0..selected_idx+1] and subtract the selected node's own line count.
+    // This correctly accounts for variable inter-node spacing without reimplementing
+    // the position-aware rendering logic.
+    let selected_idx = app.selected_idx();
+    let selected_content_lines = mq_markdown::Markdown::new(vec![results[selected_idx].clone()])
+        .to_string()
+        .lines()
+        .count()
+        .max(1);
+
+    let selected_line = if selected_idx == 0 {
+        0
+    } else {
+        mq_markdown::Markdown::new(results[..selected_idx + 1].to_vec())
+            .to_string()
+            .lines()
+            .count()
+            .saturating_sub(selected_content_lines)
+    };
+
+    let selected_end_line = selected_line + selected_content_lines;
+
     let items: Vec<ListItem> = mq_markdown::Markdown::new(results.to_vec())
         .to_string()
         .lines()
         .enumerate()
         .map(|(i, value)| {
+            let is_selected = i >= selected_line && i < selected_end_line;
             let content = if is_markdown_header(value) {
-                // Apply header highlighting
                 Line::from(Span::styled(
                     value.to_string(),
                     Style::default()
@@ -152,7 +179,7 @@ fn draw_results_list(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from(value.to_string())
             };
 
-            ListItem::new(content).style(if i == app.selected_idx() {
+            ListItem::new(content).style(if is_selected {
                 Style::default().fg(Color::Black).bg(Color::White)
             } else {
                 Style::default()
@@ -165,7 +192,7 @@ fn draw_results_list(frame: &mut Frame, app: &App, area: Rect) {
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
     let mut state = ListState::default();
-    state.select(Some(app.selected_idx()));
+    state.select(Some(selected_line));
 
     frame.render_stateful_widget(list, area, &mut state);
 }

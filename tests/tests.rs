@@ -222,10 +222,24 @@ fn test_home_end_navigation() {
     app.set_query(".h".to_string());
     app.exec_query();
 
+    // End key should navigate to the last visible result (skipping invisible nodes at the end)
     app.handle_event(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)))
         .unwrap();
-    assert_eq!(app.selected_idx(), app.results().len() - 1);
+    let end_idx = app.selected_idx();
+    let results = app.results();
+    assert!(end_idx < results.len(), "end_idx out of bounds");
+    // All results after end_idx should be invisible (render to empty)
+    for i in (end_idx + 1)..results.len() {
+        let rendered = mq_markdown::Markdown::new(vec![results[i].clone()]).to_string();
+        assert!(
+            rendered.is_empty(),
+            "visible result at index {} after end_idx {}",
+            i,
+            end_idx
+        );
+    }
 
+    // Home key should navigate to the first visible result
     app.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)))
         .unwrap();
     assert_eq!(app.selected_idx(), 0);
