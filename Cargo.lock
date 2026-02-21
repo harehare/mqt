@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "mq-tui"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "arboard",
  "clap",
