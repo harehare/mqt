@@ -262,6 +262,24 @@ impl App {
                         }
                     }
                 }
+                (KeyCode::Char('Y'), _) => {
+                    if !self.results.is_empty() {
+                        let current_text = self
+                            .results
+                            .get(self.selected_idx)
+                            .map(|node| node.to_string())
+                            .unwrap_or_default();
+                        if let Ok(mut clipboard) = Clipboard::new() {
+                            if clipboard.set_text(current_text).is_ok() {
+                            } else {
+                                self.error_msg =
+                                    Some("Error: Could not copy to clipboard".to_string());
+                            }
+                        } else {
+                            self.error_msg = Some("Error: Could not access clipboard".to_string());
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -708,9 +726,9 @@ impl App {
         if len == 0 {
             return 0;
         }
-        
+
         let start_idx = self.selected_idx;
-        
+
         // Calculate the current rendered line position
         let current_line = if start_idx == 0 {
             0
@@ -724,10 +742,10 @@ impl App {
                         .to_string()
                         .lines()
                         .count()
-                        .max(1)
+                        .max(1),
                 )
         };
-        
+
         // Find next node that renders to a different line position
         let mut idx = start_idx;
         for _ in 0..len {
@@ -737,10 +755,9 @@ impl App {
             } else {
                 idx = if idx == 0 { len - 1 } else { idx - 1 };
             }
-            
+
             // Check if this node is visible (renders to non-empty content)
-            let rendered = Markdown::new(vec![self.results[idx].clone()])
-                .to_string();
+            let rendered = Markdown::new(vec![self.results[idx].clone()]).to_string();
             if !rendered.trim().is_empty() {
                 // Calculate the line position of this node
                 let node_line = if idx == 0 {
@@ -752,14 +769,14 @@ impl App {
                         .count()
                         .saturating_sub(rendered.lines().count().max(1))
                 };
-                
+
                 // Return this node if it's at a different line position
                 if node_line != current_line {
                     return idx;
                 }
             }
         }
-        
+
         start_idx // No different position found, stay put
     }
 
@@ -773,19 +790,18 @@ impl App {
         }
         let mut idx = start;
         let mut checked = 0;
-        
+
         while checked < len {
-            let rendered = Markdown::new(vec![self.results[idx].clone()])
-                .to_string();
-            
+            let rendered = Markdown::new(vec![self.results[idx].clone()]).to_string();
+
             // A node is visible if it renders to non-empty, non-whitespace content
             // We need to check both the raw length and trimmed length
             let is_visible = !rendered.trim().is_empty();
-            
+
             if is_visible {
                 return idx;
             }
-            
+
             // Move to next position
             if forward {
                 idx = (idx + 1) % len;
@@ -794,7 +810,7 @@ impl App {
             }
             checked += 1;
         }
-        
+
         start // all invisible: stay put
     }
 }
