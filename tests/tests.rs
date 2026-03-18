@@ -229,8 +229,8 @@ fn test_home_end_navigation() {
     let results = app.results();
     assert!(end_idx < results.len(), "end_idx out of bounds");
     // All results after end_idx should be invisible (render to empty)
-    for i in (end_idx + 1)..results.len() {
-        let rendered = mq_markdown::Markdown::new(vec![results[i].clone()]).to_string();
+    for (i, result) in results.iter().enumerate().skip(end_idx + 1) {
+        let rendered = mq_markdown::Markdown::new(vec![result.clone()]).to_string();
         assert!(
             rendered.is_empty(),
             "visible result at index {} after end_idx {}",
