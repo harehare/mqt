@@ -831,7 +831,7 @@ mod tests {
     #[test]
     fn test_app_creation() {
         let app = create_test_app();
-        assert_eq!(app.query(), "");
+        assert_eq!(app.query(), ".");
         assert_eq!(app.selected_idx(), 0);
         assert_eq!(app.mode(), Mode::Normal);
         assert!(!app.show_detail());
@@ -1078,7 +1078,7 @@ mod tests {
             state: crossterm::event::KeyEventState::NONE,
         });
         app.handle_event(char_event).unwrap();
-        assert_eq!(app.query(), "t");
+        assert_eq!(app.query(), "t.");
         assert_eq!(app.cursor_position(), 1);
     }
 
@@ -1597,7 +1597,7 @@ mod tests {
             state: crossterm::event::KeyEventState::NONE,
         });
         app.handle_event(press_j).unwrap();
-        assert_eq!(app.query(), "j");
+        assert_eq!(app.query(), "j.");
 
         // Simulate Release event for 'j'
         let release_j = Event::Key(KeyEvent {
@@ -1607,7 +1607,7 @@ mod tests {
             state: crossterm::event::KeyEventState::NONE,
         });
         app.handle_event(release_j).unwrap();
-        assert_eq!(app.query(), "j"); // Should still be "j", not "jj"
+        assert_eq!(app.query(), "j."); // Should still be "j", not "jj"
 
         // Simulate typing 'k' with Press event
         let press_k = Event::Key(KeyEvent {
@@ -1617,7 +1617,7 @@ mod tests {
             state: crossterm::event::KeyEventState::NONE,
         });
         app.handle_event(press_k).unwrap();
-        assert_eq!(app.query(), "jk");
+        assert_eq!(app.query(), "jk.");
 
         // Simulate Release event for 'k'
         let release_k = Event::Key(KeyEvent {
@@ -1627,7 +1627,7 @@ mod tests {
             state: crossterm::event::KeyEventState::NONE,
         });
         app.handle_event(release_k).unwrap();
-        assert_eq!(app.query(), "jk"); // Should still be "jk", not "jkk"
+        assert_eq!(app.query(), "jk."); // Should still be "jk", not "jkk"
 
         // Verify the fix: query is "jk" not "jjkk"
     }

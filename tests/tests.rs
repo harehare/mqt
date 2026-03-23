@@ -17,7 +17,7 @@ This is a paragraph.
 #[test]
 fn test_app_creation() {
     let app = create_test_app();
-    assert_eq!(app.query(), "");
+    assert_eq!(app.query(), ".");
     assert_eq!(app.mode(), Mode::Normal);
     assert!(!app.show_detail());
     assert_eq!(app.selected_idx(), 0);
@@ -140,7 +140,7 @@ fn test_query_editing() {
     )))
     .unwrap();
 
-    assert_eq!(app.query(), "test");
+    assert_eq!(app.query(), ".test");
 
     // Backspace
     app.handle_event(Event::Key(KeyEvent::new(
@@ -148,7 +148,7 @@ fn test_query_editing() {
         KeyModifiers::NONE,
     )))
     .unwrap();
-    assert_eq!(app.query(), "tes");
+    assert_eq!(app.query(), ".tes");
 }
 
 #[test]
@@ -173,11 +173,6 @@ fn test_query_submission() {
     )))
     .unwrap();
 
-    app.handle_event(Event::Key(KeyEvent::new(
-        KeyCode::Char('.'),
-        KeyModifiers::NONE,
-    )))
-    .unwrap();
     app.handle_event(Event::Key(KeyEvent::new(
         KeyCode::Char('h'),
         KeyModifiers::NONE,

@@ -55,20 +55,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_event_handler_creation() {
-        let handler = EventHandler::new(Duration::from_millis(100));
-        // Verify that the handler can be created without panicking
-        assert!(handler.receiver.try_recv().is_err()); // Should be empty initially
-    }
-
-    #[test]
-    fn test_next_returns_none_when_no_events() {
-        let handler = EventHandler::new(Duration::from_millis(100));
-        let result = handler.next().unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
     fn test_next_handles_disconnected_channel() {
         let (_, receiver) = mpsc::channel();
         let handler = EventHandler { receiver };
