@@ -82,7 +82,7 @@ impl App {
     pub fn new(content: String) -> Self {
         let mut app = Self {
             content: content.clone(),
-            query: String::new(),
+            query: ".".to_string(),
             results: Vec::new(),
             selected_idx: 0,
             last_exec_time: Duration::from_millis(0),
