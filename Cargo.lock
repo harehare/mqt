@@ -115,6 +115,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arraydeque"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
+
+[[package]]
 name = "atomic"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -612,6 +618,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -796,6 +811,15 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash 0.2.0",
+]
+
+[[package]]
+name = "hashlink"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea0b22561a9c04a7cb1a302c013e0259cd3b4bb619f145b32f72b8b4bcbed230"
+dependencies = [
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -1221,9 +1245,9 @@ dependencies = [
 
 [[package]]
 name = "mq-lang"
-version = "0.5.22"
+version = "0.5.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "384d9ca22a1630311adc08ca29c835f479b8f79b63d7e1689998fcb85f746ea6"
+checksum = "19fa57775a9335dc33f5a4f457741f2c764c24282c6453331f9426d65fbd3f91"
 dependencies = [
  "base64",
  "chrono",
@@ -1246,13 +1270,14 @@ dependencies = [
  "thiserror 2.0.18",
  "toon-format",
  "url",
+ "yaml-rust2",
 ]
 
 [[package]]
 name = "mq-markdown"
-version = "0.5.22"
+version = "0.5.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48cd13e60fd2852ea86f4723b19c563d968a67d8088a218736b6b5e08b75b37d"
+checksum = "d532e3a634f9d9c9a984d2c82015d748c0f9a0ccbf570a0b128d555f5ac61020"
 dependencies = [
  "ego-tree",
  "itertools",
@@ -1266,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "mq-tui"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "arboard",
  "clap",
@@ -2860,6 +2885,17 @@ name = "x11rb-protocol"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
+
+[[package]]
+name = "yaml-rust2"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "631a50d867fafb7093e709d75aaee9e0e0d5deb934021fcea25ac2fe09edc51e"
+dependencies = [
+ "arraydeque",
+ "encoding_rs",
+ "hashlink",
+]
 
 [[package]]
 name = "yoke"
