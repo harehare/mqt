@@ -5,8 +5,7 @@ set -e
 # mq-tui installation script
 
 readonly MQT_REPO="harehare/mq-tui"
-readonly MQT_INSTALL_DIR="$HOME/.mq"
-readonly MQT_BIN_DIR="$MQT_INSTALL_DIR/bin"
+readonly MQT_BIN_DIR="$HOME/.local/bin"
 
 
 # Colors for output
