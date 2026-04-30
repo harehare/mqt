@@ -1348,9 +1348,9 @@ dependencies = [
 
 [[package]]
 name = "mq-markdown"
-version = "0.5.27"
+version = "0.5.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a24e772fd4dbe02ad6d9d408ab81daadcdbcd7bc0d2456acc3d2e679f9d0b95"
+checksum = "7b2612249610d88646e121aa19de44bc0cafb91a14e3e6b5c7d13921d8d77c49"
 dependencies = [
  "ego-tree",
  "itertools",
