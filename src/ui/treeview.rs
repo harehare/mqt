@@ -238,6 +238,16 @@ impl TreeView {
         }
     }
 
+    pub fn move_to_first(&mut self) {
+        self.selected_index = 0;
+    }
+
+    pub fn move_to_last(&mut self) {
+        if !self.items.is_empty() {
+            self.selected_index = self.items.len() - 1;
+        }
+    }
+
     pub fn toggle_expand(&mut self) {
         if let Some(item) = self.items.get(self.selected_index)
             && item.has_children

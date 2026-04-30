@@ -1,4 +1,4 @@
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use mq_tui::{App, Mode};
 
 fn create_test_app() -> App {
@@ -246,4 +246,89 @@ fn test_resize_event() {
 
     app.handle_event(Event::Resize(100, 50)).unwrap();
     assert_eq!(app.mode(), Mode::Normal);
+}
+
+#[test]
+fn test_g_G_navigation() {
+    let mut app = create_test_app();
+    app.exec_query();
+
+    // Move down a bit first
+    app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)))
+        .unwrap();
+    app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)))
+        .unwrap();
+    assert!(app.selected_idx() > 0);
+
+    // 'g' should jump to first
+    app.handle_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('g'),
+        KeyModifiers::NONE,
+    )))
+    .unwrap();
+    assert_eq!(app.selected_idx(), 0);
+
+    // 'G' should jump to last visible result
+    app.handle_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('G'),
+        KeyModifiers::SHIFT,
+    )))
+    .unwrap();
+    let last_idx = app.selected_idx();
+    let results = app.results();
+    assert!(last_idx < results.len());
+    // All results after last_idx should be invisible
+    for i in (last_idx + 1)..results.len() {
+        let rendered = mq_markdown::Markdown::new(vec![results[i].clone()]).to_string();
+        assert!(rendered.trim().is_empty(), "visible result at index {i} after last_idx {last_idx}");
+    }
+}
+
+#[test]
+fn test_mouse_scroll_navigation() {
+    let mut app = create_test_app();
+    app.exec_query();
+    assert_eq!(app.selected_idx(), 0);
+
+    let scroll_down = Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    // Scroll down moves selection forward
+    app.handle_event(scroll_down).unwrap();
+    assert!(app.selected_idx() > 0);
+
+    let prev_idx = app.selected_idx();
+    let scroll_up = Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    // Scroll up moves selection backward
+    app.handle_event(scroll_up).unwrap();
+    assert!(app.selected_idx() < prev_idx);
+}
+
+#[test]
+fn test_mouse_scroll_ignored_in_help_mode() {
+    let mut app = create_test_app();
+    app.exec_query();
+    app.set_mode(Mode::Help);
+
+    let initial_idx = app.selected_idx();
+    let scroll_down = Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    app.handle_event(scroll_down).unwrap();
+    // In Help mode, mouse scroll should not change selection
+    assert_eq!(app.selected_idx(), initial_idx);
 }
