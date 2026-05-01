@@ -1,5 +1,5 @@
 use arboard::Clipboard;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
 use miette::IntoDiagnostic;
 use mq_lang::Engine;
 use mq_markdown::Markdown;
@@ -154,6 +154,23 @@ impl App {
     }
 
     fn handle_normal_mode_event(&mut self, event: Event) -> miette::Result<()> {
+        if let Event::Mouse(mouse_event) = event {
+            match mouse_event.kind {
+                MouseEventKind::ScrollDown => {
+                    if !self.results.is_empty() {
+                        self.selected_idx = self.next_visible_from_current(true);
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    if !self.results.is_empty() {
+                        self.selected_idx = self.next_visible_from_current(false);
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         if let Event::Key(KeyEvent {
             code,
             modifiers,
@@ -236,6 +253,18 @@ impl App {
                     }
                 }
                 (KeyCode::End, _) => {
+                    if !self.results.is_empty() {
+                        let last = self.results.len() - 1;
+                        self.selected_idx = self.next_visible(last, false);
+                    }
+                }
+                // Jump to first/last result (vim-style)
+                (KeyCode::Char('g'), _) => {
+                    if !self.results.is_empty() {
+                        self.selected_idx = self.next_visible(0, true);
+                    }
+                }
+                (KeyCode::Char('G'), _) => {
                     if !self.results.is_empty() {
                         let last = self.results.len() - 1;
                         self.selected_idx = self.next_visible(last, false);
@@ -407,6 +436,23 @@ impl App {
     }
 
     fn handle_tree_view_mode_event(&mut self, event: Event) -> miette::Result<()> {
+        if let Event::Mouse(mouse_event) = event {
+            match mouse_event.kind {
+                MouseEventKind::ScrollDown => {
+                    if let Some(tree_view) = &mut self.tree_view {
+                        tree_view.move_down();
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    if let Some(tree_view) = &mut self.tree_view {
+                        tree_view.move_up();
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         if let Event::Key(KeyEvent {
             code,
             modifiers,
@@ -438,6 +484,17 @@ impl App {
                 (KeyCode::Enter, _) | (KeyCode::Char(' '), _) => {
                     if let Some(tree_view) = &mut self.tree_view {
                         tree_view.toggle_expand();
+                    }
+                }
+                // Jump to first/last item (vim-style)
+                (KeyCode::Char('g'), _) => {
+                    if let Some(tree_view) = &mut self.tree_view {
+                        tree_view.move_to_first();
+                    }
+                }
+                (KeyCode::Char('G'), _) => {
+                    if let Some(tree_view) = &mut self.tree_view {
+                        tree_view.move_to_last();
                     }
                 }
                 // Show help

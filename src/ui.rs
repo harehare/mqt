@@ -306,6 +306,14 @@ fn draw_help_screen(frame: &mut Frame) {
             Span::raw(" - Move down"),
         ]),
         Line::from(vec![
+            Span::styled("g", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Jump to first result"),
+        ]),
+        Line::from(vec![
+            Span::styled("G", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Jump to last result"),
+        ]),
+        Line::from(vec![
             Span::styled("PgUp", Style::default().fg(Color::Yellow)),
             Span::raw(" - Page up"),
         ]),
@@ -392,6 +400,14 @@ fn draw_help_screen(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("↓/j", Style::default().fg(Color::Yellow)),
             Span::raw(" - Move down in tree"),
+        ]),
+        Line::from(vec![
+            Span::styled("g", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Jump to first node"),
+        ]),
+        Line::from(vec![
+            Span::styled("G", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Jump to last node"),
         ]),
         Line::from(vec![
             Span::styled("Enter/Space", Style::default().fg(Color::Yellow)),
