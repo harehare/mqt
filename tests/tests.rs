@@ -1,4 +1,4 @@
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use mq_tui::{App, Mode};
 
 fn create_test_app() -> App {
@@ -249,7 +249,7 @@ fn test_resize_event() {
 }
 
 #[test]
-fn test_g_G_navigation() {
+fn test_g_g_navigation() {
     let mut app = create_test_app();
     app.exec_query();
 
@@ -278,9 +278,12 @@ fn test_g_G_navigation() {
     let results = app.results();
     assert!(last_idx < results.len());
     // All results after last_idx should be invisible
-    for i in (last_idx + 1)..results.len() {
-        let rendered = mq_markdown::Markdown::new(vec![results[i].clone()]).to_string();
-        assert!(rendered.trim().is_empty(), "visible result at index {i} after last_idx {last_idx}");
+    for (i, item) in results.iter().enumerate().skip(last_idx + 1) {
+        let rendered = mq_markdown::Markdown::new(vec![item.clone()]).to_string();
+        assert!(
+            rendered.trim().is_empty(),
+            "visible result at index {i} after last_idx {last_idx}"
+        );
     }
 }
 

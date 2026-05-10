@@ -156,15 +156,11 @@ impl App {
     fn handle_normal_mode_event(&mut self, event: Event) -> miette::Result<()> {
         if let Event::Mouse(mouse_event) = event {
             match mouse_event.kind {
-                MouseEventKind::ScrollDown => {
-                    if !self.results.is_empty() {
-                        self.selected_idx = self.next_visible_from_current(true);
-                    }
+                MouseEventKind::ScrollDown if !self.results.is_empty() => {
+                    self.selected_idx = self.next_visible_from_current(true);
                 }
-                MouseEventKind::ScrollUp => {
-                    if !self.results.is_empty() {
-                        self.selected_idx = self.next_visible_from_current(false);
-                    }
+                MouseEventKind::ScrollUp if !self.results.is_empty() => {
+                    self.selected_idx = self.next_visible_from_current(false);
                 }
                 _ => {}
             }
@@ -235,40 +231,28 @@ impl App {
                     // Content is already updated by update_sidebar_selection()
                     // Enter key can be used for future actions if needed
                 }
-                (KeyCode::PageDown, _) => {
-                    if !self.results.is_empty() {
-                        let next = (self.selected_idx + 10).min(self.results.len() - 1);
-                        self.selected_idx = self.next_visible(next, true);
-                    }
+                (KeyCode::PageDown, _) if !self.results.is_empty() => {
+                    let next = (self.selected_idx + 10).min(self.results.len() - 1);
+                    self.selected_idx = self.next_visible(next, true);
                 }
-                (KeyCode::PageUp, _) => {
-                    if !self.results.is_empty() {
-                        let prev = self.selected_idx.saturating_sub(10);
-                        self.selected_idx = self.next_visible(prev, false);
-                    }
+                (KeyCode::PageUp, _) if !self.results.is_empty() => {
+                    let prev = self.selected_idx.saturating_sub(10);
+                    self.selected_idx = self.next_visible(prev, false);
                 }
-                (KeyCode::Home, _) => {
-                    if !self.results.is_empty() {
-                        self.selected_idx = self.next_visible(0, true);
-                    }
+                (KeyCode::Home, _) if !self.results.is_empty() => {
+                    self.selected_idx = self.next_visible(0, true);
                 }
-                (KeyCode::End, _) => {
-                    if !self.results.is_empty() {
-                        let last = self.results.len() - 1;
-                        self.selected_idx = self.next_visible(last, false);
-                    }
+                (KeyCode::End, _) if !self.results.is_empty() => {
+                    let last = self.results.len() - 1;
+                    self.selected_idx = self.next_visible(last, false);
                 }
                 // Jump to first/last result (vim-style)
-                (KeyCode::Char('g'), _) => {
-                    if !self.results.is_empty() {
-                        self.selected_idx = self.next_visible(0, true);
-                    }
+                (KeyCode::Char('g'), _) if !self.results.is_empty() => {
+                    self.selected_idx = self.next_visible(0, true);
                 }
-                (KeyCode::Char('G'), _) => {
-                    if !self.results.is_empty() {
-                        let last = self.results.len() - 1;
-                        self.selected_idx = self.next_visible(last, false);
-                    }
+                (KeyCode::Char('G'), _) if !self.results.is_empty() => {
+                    let last = self.results.len() - 1;
+                    self.selected_idx = self.next_visible(last, false);
                 }
                 // Clear query with Ctrl+L
                 (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
@@ -276,37 +260,30 @@ impl App {
                     self.cursor_position = 0;
                     self.exec_query();
                 }
-                (KeyCode::Char('y'), _) => {
-                    if !self.results.is_empty() {
-                        let result_text =
-                            mq_markdown::Markdown::new(self.results.clone()).to_string();
-                        if let Ok(mut clipboard) = Clipboard::new() {
-                            if clipboard.set_text(result_text).is_ok() {
-                            } else {
-                                self.error_msg =
-                                    Some("Error: Could not copy to clipboard".to_string());
-                            }
+                (KeyCode::Char('y'), _) if !self.results.is_empty() => {
+                    let result_text = mq_markdown::Markdown::new(self.results.clone()).to_string();
+                    if let Ok(mut clipboard) = Clipboard::new() {
+                        if clipboard.set_text(result_text).is_ok() {
                         } else {
-                            self.error_msg = Some("Error: Could not access clipboard".to_string());
+                            self.error_msg = Some("Error: Could not copy to clipboard".to_string());
                         }
+                    } else {
+                        self.error_msg = Some("Error: Could not access clipboard".to_string());
                     }
                 }
-                (KeyCode::Char('Y'), _) => {
-                    if !self.results.is_empty() {
-                        let current_text = self
-                            .results
-                            .get(self.selected_idx)
-                            .map(|node| node.to_string())
-                            .unwrap_or_default();
-                        if let Ok(mut clipboard) = Clipboard::new() {
-                            if clipboard.set_text(current_text).is_ok() {
-                            } else {
-                                self.error_msg =
-                                    Some("Error: Could not copy to clipboard".to_string());
-                            }
+                (KeyCode::Char('Y'), _) if !self.results.is_empty() => {
+                    let current_text = self
+                        .results
+                        .get(self.selected_idx)
+                        .map(|node| node.to_string())
+                        .unwrap_or_default();
+                    if let Ok(mut clipboard) = Clipboard::new() {
+                        if clipboard.set_text(current_text).is_ok() {
                         } else {
-                            self.error_msg = Some("Error: Could not access clipboard".to_string());
+                            self.error_msg = Some("Error: Could not copy to clipboard".to_string());
                         }
+                    } else {
+                        self.error_msg = Some("Error: Could not access clipboard".to_string());
                     }
                 }
                 _ => {}
@@ -352,31 +329,23 @@ impl App {
                     self.last_exec = Instant::now();
                     self.query_pending = true;
                 }
-                (KeyCode::Backspace, _) => {
-                    if self.cursor_position > 0 {
-                        self.query.remove(self.cursor_position - 1);
-                        self.cursor_position -= 1;
-                        self.last_exec = Instant::now();
-                        self.query_pending = true;
-                    }
+                (KeyCode::Backspace, _) if self.cursor_position > 0 => {
+                    self.query.remove(self.cursor_position - 1);
+                    self.cursor_position -= 1;
+                    self.last_exec = Instant::now();
+                    self.query_pending = true;
                 }
-                (KeyCode::Delete, _) => {
-                    if self.cursor_position < self.query.len() {
-                        self.query.remove(self.cursor_position);
-                        self.last_exec = Instant::now();
-                        self.query_pending = true;
-                    }
+                (KeyCode::Delete, _) if self.cursor_position < self.query.len() => {
+                    self.query.remove(self.cursor_position);
+                    self.last_exec = Instant::now();
+                    self.query_pending = true;
                 }
                 // Move cursor
-                (KeyCode::Left, _) => {
-                    if self.cursor_position > 0 {
-                        self.cursor_position -= 1;
-                    }
+                (KeyCode::Left, _) if self.cursor_position > 0 => {
+                    self.cursor_position -= 1;
                 }
-                (KeyCode::Right, _) => {
-                    if self.cursor_position < self.query.len() {
-                        self.cursor_position += 1;
-                    }
+                (KeyCode::Right, _) if self.cursor_position < self.query.len() => {
+                    self.cursor_position += 1;
                 }
                 (KeyCode::Home, _) => {
                     self.cursor_position = 0;
@@ -385,23 +354,19 @@ impl App {
                     self.cursor_position = self.query.len();
                 }
                 // Navigate history
-                (KeyCode::Up, _) => {
-                    if !self.query_history.is_empty() {
-                        match self.history_position {
-                            None => {
-                                self.history_position = Some(self.query_history.len() - 1);
-                                self.query =
-                                    self.query_history[self.history_position.unwrap()].clone();
-                            }
-                            Some(pos) if pos > 0 => {
-                                self.history_position = Some(pos - 1);
-                                self.query =
-                                    self.query_history[self.history_position.unwrap()].clone();
-                            }
-                            _ => {}
+                (KeyCode::Up, _) if !self.query_history.is_empty() => {
+                    match self.history_position {
+                        None => {
+                            self.history_position = Some(self.query_history.len() - 1);
+                            self.query = self.query_history[self.history_position.unwrap()].clone();
                         }
-                        self.cursor_position = self.query.len();
+                        Some(pos) if pos > 0 => {
+                            self.history_position = Some(pos - 1);
+                            self.query = self.query_history[self.history_position.unwrap()].clone();
+                        }
+                        _ => {}
                     }
+                    self.cursor_position = self.query.len();
                 }
                 (KeyCode::Down, _) => {
                     if let Some(pos) = self.history_position {
@@ -631,7 +596,7 @@ impl App {
                             self.results = results
                                 .into_iter()
                                 .map(|runtime_value| match runtime_value {
-                                    mq_lang::RuntimeValue::Markdown(node, _) => node.clone(),
+                                    mq_lang::RuntimeValue::Markdown(node, _) => *node,
                                     _ => runtime_value.to_string().into(),
                                 })
                                 .collect();
