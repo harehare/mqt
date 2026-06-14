@@ -122,6 +122,9 @@ impl TreeItem {
             Node::MdxTextExpression(_) => "MDX Text Expression".to_string(),
             Node::MdxJsEsm(_) => "MDX JS ESM".to_string(),
             Node::Empty => "Empty".to_string(),
+            Node::Callout(c) => format!("Callout: {}", c.kind),
+            Node::Embed(e) => format!("Embed: {}", e.target),
+            Node::WikiLink(w) => format!("WikiLink: {}", w.target),
         }
     }
 
