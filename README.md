@@ -73,6 +73,20 @@ cargo build --release
 mq-tui README.md
 ```
 
+### Multiple Files (Tabs)
+
+Open several Markdown files at once; each one becomes a tab:
+
+```bash
+mq-tui README.md CHANGELOG.md docs/*.md
+```
+
+A tab bar appears at the top whenever more than one file is open. Switch
+tabs with `←` / `→` or `Tab` / `Shift+Tab`. The query box is shared across
+all tabs: whatever query you run is applied to every open file at once, so
+switching tabs shows that file's own filtered results without retyping the
+query. Press `o` at any time to open another file as a new tab.
+
 ### Query Examples
 
 Once in the TUI, press `:` to enter query mode and try these queries:
@@ -110,6 +124,9 @@ Once in the TUI, press `:` to enter query mode and try these queries:
 | `d`         | Toggle detail view for selected item |
 | `y`         | Copy results to clipboard            |
 | `Ctrl+L`    | Clear current query                  |
+| `o`         | Open a file as a new tab             |
+| `←` / `→`   | Switch tabs (when multiple files are open) |
+| `Tab` / `Shift+Tab` | Switch tabs (when multiple files are open) |
 
 ### Navigation
 
@@ -140,8 +157,19 @@ Once in the TUI, press `:` to enter query mode and try these queries:
 | `↑` / `k`         | Move up in tree      |
 | `↓` / `j`         | Move down in tree    |
 | `Enter` / `Space` | Expand/collapse node |
+| `←` / `→`         | Switch tabs (when multiple files are open) |
 | `Esc` / `t`       | Exit tree view       |
 | `?` / `F1`        | Show help            |
+
+### Open File Mode
+
+| Key                    | Action                          |
+| ---------------------- | -------------------------------- |
+| `Enter`                | Open the typed path as a new tab |
+| `Esc`                  | Cancel                           |
+| `←` / `→`              | Move cursor in path string       |
+| `Home` / `End`         | Jump to start/end of path        |
+| `Backspace` / `Delete` | Edit path text                   |
 
 ## Modes
 

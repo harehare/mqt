@@ -6,32 +6,51 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
+        Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Tabs,
+        Wrap,
     },
 };
 
 use crate::app::{App, Mode};
 
 pub fn draw_ui(frame: &mut Frame, app: &App) {
+    let show_tabs = app.document_count() > 1;
+
+    let mut constraints = Vec::with_capacity(4);
+    if show_tabs {
+        constraints.push(Constraint::Length(3)); // Tab bar
+    }
+    constraints.push(Constraint::Length(3)); // Query input / title bar
+    constraints.push(Constraint::Min(0)); // Results area
+    constraints.push(Constraint::Length(1)); // Status line
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Query input
-            Constraint::Min(0),    // Results area
-            Constraint::Length(1), // Status line
-        ])
+        .constraints(constraints)
         .split(frame.area());
 
-    if app.mode() == Mode::Query {
-        draw_query_input(frame, app, chunks[0]);
-    } else {
-        draw_title_bar(frame, app, chunks[0]);
+    let mut next_chunk = 0;
+    if show_tabs {
+        draw_tab_bar(frame, app, chunks[next_chunk]);
+        next_chunk += 1;
+    }
+
+    let header_area = chunks[next_chunk];
+    next_chunk += 1;
+    let results_area = chunks[next_chunk];
+    next_chunk += 1;
+    let status_area = chunks[next_chunk];
+
+    match app.mode() {
+        Mode::Query => draw_query_input(frame, app, header_area),
+        Mode::OpenFile => draw_open_file_input(frame, app, header_area),
+        _ => draw_title_bar(frame, app, header_area),
     }
 
     match app.mode() {
         Mode::TreeView => {
             if let Some(tree_view) = app.tree_view() {
-                tree_view.render(frame, chunks[1]);
+                tree_view.render(frame, results_area);
             }
         }
         _ => {
@@ -43,7 +62,7 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
                         Constraint::Percentage(20), // Sidebar
                         Constraint::Percentage(80), // Main content
                     ])
-                    .split(chunks[1]);
+                    .split(results_area);
 
                 // Draw sidebar
                 if let Some(sidebar) = app.sidebar_tree_view() {
@@ -74,18 +93,18 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
                             Constraint::Percentage(40), // Results list
                             Constraint::Percentage(60), // Detail view
                         ])
-                        .split(chunks[1]);
+                        .split(results_area);
 
                     draw_results_list(frame, app, detail_chunks[0]);
                     draw_detail_view(frame, app, detail_chunks[1]);
                 } else {
-                    draw_results_list(frame, app, chunks[1]);
+                    draw_results_list(frame, app, results_area);
                 }
             }
         }
     }
 
-    draw_status_line(frame, app, chunks[2]);
+    draw_status_line(frame, app, status_area);
 
     if let Some(error) = app.error_msg() {
         draw_error_popup(frame, error);
@@ -94,6 +113,52 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
     if app.mode() == Mode::Help {
         draw_help_screen(frame);
     }
+}
+
+/// Draw the tab bar showing all open documents, with the active one highlighted.
+fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let titles: Vec<Line> = app
+        .document_names()
+        .into_iter()
+        .map(|name| Line::from(Span::raw(name.to_string())))
+        .collect();
+
+    let tabs = Tabs::new(titles)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Files (←/→, Tab/Shift+Tab to switch)"),
+        )
+        .select(app.active_doc_index())
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .divider(Span::raw(" | "));
+
+    frame.render_widget(tabs, area);
+}
+
+/// Draw the path input box used in Mode::OpenFile
+fn draw_open_file_input(frame: &mut Frame, app: &App, area: Rect) {
+    let open_file_block = Block::default()
+        .title("Open File (Enter to confirm, Esc to cancel)")
+        .borders(Borders::ALL)
+        .style(Style::default());
+
+    let open_file_text = Paragraph::new(app.open_file_path())
+        .style(Style::default().fg(Color::Yellow))
+        .block(open_file_block);
+
+    frame.render_widget(open_file_text, area);
+
+    let cursor_x = app.open_file_cursor() as u16 + 1; // +1 for block border
+    frame.set_cursor_position(Position::new(
+        area.x + cursor_x,
+        area.y + 1, // +1 for block border
+    ));
 }
 
 fn draw_query_input(frame: &mut Frame, app: &App, area: Rect) {
@@ -208,8 +273,15 @@ fn draw_status_line(frame: &mut Frame, app: &App, area: Rect) {
     let exec_time = app.last_exec_time();
     let results_count = app.results().len();
 
+    let doc_info = if app.document_count() > 1 {
+        format!("[{}/{}] ", app.active_doc_index() + 1, app.document_count())
+    } else {
+        String::new()
+    };
+
     let status = format!(
-        "{} results | Execution time: {:.2}ms | Press q to quit",
+        "{}{} results | Execution time: {:.2}ms | Press q to quit",
+        doc_info,
         results_count,
         exec_time.as_secs_f64() * 1000.0
     );
@@ -236,7 +308,7 @@ fn draw_title_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw(" | "),
         Span::styled(
-            "Press 's' for sidebar, 't' for tree view, '?' for help",
+            "Press 's' for sidebar, 't' for tree view, 'o' to open a file, '?' for help",
             Style::default().fg(Color::Gray),
         ),
     ];
@@ -376,6 +448,26 @@ fn draw_help_screen(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("Ctrl+l", Style::default().fg(Color::Yellow)),
             Span::raw(" - Clear query"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Tabs / Files",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::UNDERLINED),
+        )]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("←/→", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Switch tabs"),
+        ]),
+        Line::from(vec![
+            Span::styled("Tab/Shift+Tab", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Switch tabs"),
+        ]),
+        Line::from(vec![
+            Span::styled("o", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Open a file as a new tab"),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
