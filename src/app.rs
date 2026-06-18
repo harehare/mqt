@@ -22,6 +22,7 @@ pub enum Mode {
     Query,
     Help,
     TreeView,
+    OpenFile,
 }
 
 impl Display for Mode {
@@ -31,27 +32,130 @@ impl Display for Mode {
             Mode::Query => write!(f, "QUERY"),
             Mode::Help => write!(f, "HELP"),
             Mode::TreeView => write!(f, "TREE VIEW"),
+            Mode::OpenFile => write!(f, "OPEN FILE"),
         }
     }
 }
 
-pub struct App {
+/// A single open Markdown document (tab).
+struct Document {
     /// The Markdown content to process
     content: String,
-    /// The query to run on the Markdown content
-    query: String,
+    /// Filename (if loaded from a file)
+    filename: Option<String>,
     /// The current results from the query
     results: Vec<mq_markdown::Node>,
     /// Currently selected result index
     selected_idx: usize,
-    /// Last query execution time
+    /// Error message if the query/parse fails for this document
+    error_msg: Option<String>,
+    /// All parsed markdown nodes (for section extraction)
+    all_nodes: Vec<mq_markdown::Node>,
+    /// Sidebar tree view (headers only)
+    sidebar_tree_view: Option<TreeView>,
+}
+
+impl Document {
+    fn new(content: String, filename: Option<String>) -> Self {
+        let mut doc = Self {
+            content,
+            filename,
+            results: Vec::new(),
+            selected_idx: 0,
+            error_msg: None,
+            all_nodes: Vec::new(),
+            sidebar_tree_view: None,
+        };
+        doc.init_sidebar_tree_view();
+        doc
+    }
+
+    fn display_name(&self) -> &str {
+        self.filename.as_deref().unwrap_or("untitled")
+    }
+
+    fn init_sidebar_tree_view(&mut self) {
+        let markdown_result = Markdown::from_markdown_str(&self.content);
+        match markdown_result {
+            Ok(markdown) => {
+                // Store all nodes for section extraction
+                self.all_nodes = markdown.nodes.clone();
+
+                // Extract only heading nodes for the sidebar
+                let headers: Vec<mq_markdown::Node> = markdown
+                    .nodes
+                    .into_iter()
+                    .filter(|node| matches!(node, mq_markdown::Node::Heading(_)))
+                    .collect();
+
+                if !headers.is_empty() {
+                    let mut tree_view = TreeView::new(headers);
+                    tree_view.rebuild_items_with_all_documents(true);
+                    self.sidebar_tree_view = Some(tree_view);
+                }
+            }
+            Err(_) => {
+                // Silently fail for sidebar initialization
+            }
+        }
+    }
+
+    /// Extract section content from heading to the next same-level heading
+    fn extract_section_content(&self, heading: &mq_markdown::Heading) -> Vec<mq_markdown::Node> {
+        let mut section_nodes = Vec::new();
+        let mut found_heading = false;
+        let target_depth = heading.depth;
+
+        for node in &self.all_nodes {
+            if !found_heading {
+                // Check if this is our target heading
+                if let mq_markdown::Node::Heading(h) = node
+                    && h.depth == heading.depth
+                {
+                    let h_text: String = h.values.iter().map(|n| n.value()).collect();
+                    let target_text: String = heading.values.iter().map(|n| n.value()).collect();
+                    if h_text == target_text {
+                        found_heading = true;
+                        section_nodes.push(node.clone());
+                    }
+                }
+            } else {
+                // After finding the heading, collect nodes until next same-level heading
+                if let mq_markdown::Node::Heading(h) = node
+                    && h.depth <= target_depth
+                {
+                    // Found next same-level or higher-level heading, stop
+                    break;
+                }
+                section_nodes.push(node.clone());
+            }
+        }
+
+        section_nodes
+    }
+}
+
+/// What the sidebar selection resolved to, used to update the active document's results.
+enum SidebarSelection {
+    AllDocuments,
+    Heading(mq_markdown::Heading, String),
+}
+
+pub struct App {
+    /// Open documents (tabs)
+    documents: Vec<Document>,
+    /// Index of the currently active document
+    active_doc: usize,
+    /// The query to run on the Markdown content (shared across all open documents)
+    query: String,
+    /// Last query execution time (total, across all open documents)
     last_exec_time: Duration,
     /// Last query execution timestamp
     last_exec: Instant,
     /// Should the application exit
     should_quit: bool,
-    /// Error message if the query fails
-    error_msg: Option<String>,
+    /// Transient error message not tied to a specific document (e.g. clipboard failures)
+    transient_error: Option<String>,
     /// Current app mode
     mode: Mode,
     /// Show detailed view of selected item
@@ -62,54 +166,67 @@ pub struct App {
     history_position: Option<usize>,
     /// Current cursor position in query string
     cursor_position: usize,
-    /// Filename (if loaded from a file)
-    filename: Option<String>,
-    /// Tree view component
+    /// Tree view component for the active document (Mode::TreeView)
     tree_view: Option<TreeView>,
     /// Show tree sidebar in Normal mode
     show_tree_sidebar: bool,
-    /// Sidebar tree view (headers only)
-    sidebar_tree_view: Option<TreeView>,
-    /// All parsed markdown nodes (for section extraction)
-    all_nodes: Vec<mq_markdown::Node>,
     /// Whether a query execution is pending (for debouncing)
     query_pending: bool,
     /// Debounce duration for query execution
     debounce_duration: Duration,
+    /// Path currently being typed in Mode::OpenFile
+    open_file_path: String,
+    /// Cursor position within open_file_path
+    open_file_cursor: usize,
 }
 
 impl App {
     pub fn new(content: String) -> Self {
-        let mut app = Self {
-            content: content.clone(),
+        Self::from_documents(vec![Document::new(content, None)])
+    }
+
+    pub fn with_file(content: String, filename: String) -> Self {
+        Self::from_documents(vec![Document::new(content, Some(filename))])
+    }
+
+    /// Create an App with multiple open documents (tabs), each as (content, filename).
+    pub fn with_files(files: Vec<(String, String)>) -> Self {
+        let documents = files
+            .into_iter()
+            .map(|(content, filename)| Document::new(content, Some(filename)))
+            .collect();
+        Self::from_documents(documents)
+    }
+
+    fn from_documents(documents: Vec<Document>) -> Self {
+        Self {
+            documents,
+            active_doc: 0,
             query: ".".to_string(),
-            results: Vec::new(),
-            selected_idx: 0,
             last_exec_time: Duration::from_millis(0),
             last_exec: Instant::now(),
             should_quit: false,
-            error_msg: None,
+            transient_error: None,
             mode: Mode::Normal,
             show_detail: false,
             query_history: Vec::new(),
             history_position: None,
             cursor_position: 0,
-            filename: None,
             tree_view: None,
             show_tree_sidebar: false,
-            sidebar_tree_view: None,
-            all_nodes: Vec::new(),
             query_pending: false,
             debounce_duration: Duration::from_millis(300),
-        };
-        app.init_sidebar_tree_view();
-        app
+            open_file_path: String::new(),
+            open_file_cursor: 0,
+        }
     }
 
-    pub fn with_file(content: String, filename: String) -> Self {
-        let mut app = Self::new(content);
-        app.filename = Some(filename);
-        app
+    fn active_doc(&self) -> &Document {
+        &self.documents[self.active_doc]
+    }
+
+    fn active_doc_mut(&mut self) -> &mut Document {
+        &mut self.documents[self.active_doc]
     }
 
     pub fn run(&mut self) -> miette::Result<()> {
@@ -144,23 +261,27 @@ impl App {
     }
 
     pub fn handle_event(&mut self, event: Event) -> miette::Result<()> {
-        self.error_msg = None;
+        self.transient_error = None;
+        self.active_doc_mut().error_msg = None;
         match self.mode {
             Mode::Normal => self.handle_normal_mode_event(event),
             Mode::Query => self.handle_query_mode_event(event),
             Mode::Help => self.handle_help_mode_event(event),
             Mode::TreeView => self.handle_tree_view_mode_event(event),
+            Mode::OpenFile => self.handle_open_file_mode_event(event),
         }
     }
 
     fn handle_normal_mode_event(&mut self, event: Event) -> miette::Result<()> {
         if let Event::Mouse(mouse_event) = event {
             match mouse_event.kind {
-                MouseEventKind::ScrollDown if !self.results.is_empty() => {
-                    self.selected_idx = self.next_visible_from_current(true);
+                MouseEventKind::ScrollDown if !self.active_doc().results.is_empty() => {
+                    let idx = self.next_visible_from_current(true);
+                    self.active_doc_mut().selected_idx = idx;
                 }
-                MouseEventKind::ScrollUp if !self.results.is_empty() => {
-                    self.selected_idx = self.next_visible_from_current(false);
+                MouseEventKind::ScrollUp if !self.active_doc().results.is_empty() => {
+                    let idx = self.next_visible_from_current(false);
+                    self.active_doc_mut().selected_idx = idx;
                 }
                 _ => {}
             }
@@ -205,25 +326,40 @@ impl App {
                         self.update_sidebar_selection();
                     }
                 }
+                // Open a new file as an additional tab
+                (KeyCode::Char('o'), _) => {
+                    self.mode = Mode::OpenFile;
+                    self.open_file_path.clear();
+                    self.open_file_cursor = 0;
+                }
+                // Switch tabs
+                (KeyCode::Right, _) | (KeyCode::Tab, _) => {
+                    self.next_tab();
+                }
+                (KeyCode::Left, _) | (KeyCode::BackTab, _) => {
+                    self.prev_tab();
+                }
                 // Navigate results or sidebar
                 (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                    if self.show_tree_sidebar && self.sidebar_tree_view.is_some() {
-                        if let Some(sidebar) = &mut self.sidebar_tree_view {
+                    if self.show_tree_sidebar && self.active_doc().sidebar_tree_view.is_some() {
+                        if let Some(sidebar) = &mut self.active_doc_mut().sidebar_tree_view {
                             sidebar.move_down();
                         }
                         self.update_sidebar_selection();
-                    } else if !self.results.is_empty() {
-                        self.selected_idx = self.next_visible_from_current(true);
+                    } else if !self.active_doc().results.is_empty() {
+                        let idx = self.next_visible_from_current(true);
+                        self.active_doc_mut().selected_idx = idx;
                     }
                 }
                 (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                    if self.show_tree_sidebar && self.sidebar_tree_view.is_some() {
-                        if let Some(sidebar) = &mut self.sidebar_tree_view {
+                    if self.show_tree_sidebar && self.active_doc().sidebar_tree_view.is_some() {
+                        if let Some(sidebar) = &mut self.active_doc_mut().sidebar_tree_view {
                             sidebar.move_up();
                         }
                         self.update_sidebar_selection();
-                    } else if !self.results.is_empty() {
-                        self.selected_idx = self.next_visible_from_current(false);
+                    } else if !self.active_doc().results.is_empty() {
+                        let idx = self.next_visible_from_current(false);
+                        self.active_doc_mut().selected_idx = idx;
                     }
                 }
                 // Select header in sidebar (Enter key - content already updated by navigation)
@@ -231,28 +367,35 @@ impl App {
                     // Content is already updated by update_sidebar_selection()
                     // Enter key can be used for future actions if needed
                 }
-                (KeyCode::PageDown, _) if !self.results.is_empty() => {
-                    let next = (self.selected_idx + 10).min(self.results.len() - 1);
-                    self.selected_idx = self.next_visible(next, true);
+                (KeyCode::PageDown, _) if !self.active_doc().results.is_empty() => {
+                    let next =
+                        (self.active_doc().selected_idx + 10).min(self.active_doc().results.len() - 1);
+                    let idx = self.next_visible(next, true);
+                    self.active_doc_mut().selected_idx = idx;
                 }
-                (KeyCode::PageUp, _) if !self.results.is_empty() => {
-                    let prev = self.selected_idx.saturating_sub(10);
-                    self.selected_idx = self.next_visible(prev, false);
+                (KeyCode::PageUp, _) if !self.active_doc().results.is_empty() => {
+                    let prev = self.active_doc().selected_idx.saturating_sub(10);
+                    let idx = self.next_visible(prev, false);
+                    self.active_doc_mut().selected_idx = idx;
                 }
-                (KeyCode::Home, _) if !self.results.is_empty() => {
-                    self.selected_idx = self.next_visible(0, true);
+                (KeyCode::Home, _) if !self.active_doc().results.is_empty() => {
+                    let idx = self.next_visible(0, true);
+                    self.active_doc_mut().selected_idx = idx;
                 }
-                (KeyCode::End, _) if !self.results.is_empty() => {
-                    let last = self.results.len() - 1;
-                    self.selected_idx = self.next_visible(last, false);
+                (KeyCode::End, _) if !self.active_doc().results.is_empty() => {
+                    let last = self.active_doc().results.len() - 1;
+                    let idx = self.next_visible(last, false);
+                    self.active_doc_mut().selected_idx = idx;
                 }
                 // Jump to first/last result (vim-style)
-                (KeyCode::Char('g'), _) if !self.results.is_empty() => {
-                    self.selected_idx = self.next_visible(0, true);
+                (KeyCode::Char('g'), _) if !self.active_doc().results.is_empty() => {
+                    let idx = self.next_visible(0, true);
+                    self.active_doc_mut().selected_idx = idx;
                 }
-                (KeyCode::Char('G'), _) if !self.results.is_empty() => {
-                    let last = self.results.len() - 1;
-                    self.selected_idx = self.next_visible(last, false);
+                (KeyCode::Char('G'), _) if !self.active_doc().results.is_empty() => {
+                    let last = self.active_doc().results.len() - 1;
+                    let idx = self.next_visible(last, false);
+                    self.active_doc_mut().selected_idx = idx;
                 }
                 // Clear query with Ctrl+L
                 (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
@@ -260,30 +403,34 @@ impl App {
                     self.cursor_position = 0;
                     self.exec_query();
                 }
-                (KeyCode::Char('y'), _) if !self.results.is_empty() => {
-                    let result_text = mq_markdown::Markdown::new(self.results.clone()).to_string();
+                (KeyCode::Char('y'), _) if !self.active_doc().results.is_empty() => {
+                    let result_text =
+                        mq_markdown::Markdown::new(self.active_doc().results.clone()).to_string();
                     if let Ok(mut clipboard) = Clipboard::new() {
                         if clipboard.set_text(result_text).is_ok() {
                         } else {
-                            self.error_msg = Some("Error: Could not copy to clipboard".to_string());
+                            self.transient_error =
+                                Some("Error: Could not copy to clipboard".to_string());
                         }
                     } else {
-                        self.error_msg = Some("Error: Could not access clipboard".to_string());
+                        self.transient_error = Some("Error: Could not access clipboard".to_string());
                     }
                 }
-                (KeyCode::Char('Y'), _) if !self.results.is_empty() => {
+                (KeyCode::Char('Y'), _) if !self.active_doc().results.is_empty() => {
                     let current_text = self
+                        .active_doc()
                         .results
-                        .get(self.selected_idx)
+                        .get(self.active_doc().selected_idx)
                         .map(|node| node.to_string())
                         .unwrap_or_default();
                     if let Ok(mut clipboard) = Clipboard::new() {
                         if clipboard.set_text(current_text).is_ok() {
                         } else {
-                            self.error_msg = Some("Error: Could not copy to clipboard".to_string());
+                            self.transient_error =
+                                Some("Error: Could not copy to clipboard".to_string());
                         }
                     } else {
-                        self.error_msg = Some("Error: Could not access clipboard".to_string());
+                        self.transient_error = Some("Error: Could not access clipboard".to_string());
                     }
                 }
                 _ => {}
@@ -321,6 +468,13 @@ impl App {
                     self.history_position = None;
                     self.query_pending = false;
                     self.exec_query();
+                }
+                // Switch tabs without leaving query mode
+                (KeyCode::Tab, _) => {
+                    self.next_tab();
+                }
+                (KeyCode::BackTab, _) => {
+                    self.prev_tab();
                 }
                 // Edit query
                 (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
@@ -434,6 +588,15 @@ impl App {
                 (KeyCode::Char('q'), _) => {
                     self.should_quit = true;
                 }
+                // Switch tabs
+                (KeyCode::Right, _) | (KeyCode::Tab, _) => {
+                    self.next_tab();
+                    self.init_tree_view();
+                }
+                (KeyCode::Left, _) | (KeyCode::BackTab, _) => {
+                    self.prev_tab();
+                    self.init_tree_view();
+                }
                 // Navigation
                 (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
                     if let Some(tree_view) = &mut self.tree_view {
@@ -473,14 +636,92 @@ impl App {
         Ok(())
     }
 
+    fn handle_open_file_mode_event(&mut self, event: Event) -> miette::Result<()> {
+        if let Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event
+        {
+            match (code, modifiers) {
+                // Cancel
+                (KeyCode::Esc, _) => {
+                    self.mode = Mode::Normal;
+                    self.open_file_path.clear();
+                    self.open_file_cursor = 0;
+                }
+                // Open the file
+                (KeyCode::Enter, _) => {
+                    self.open_file();
+                }
+                // Edit path
+                (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                    self.open_file_path.insert(self.open_file_cursor, c);
+                    self.open_file_cursor += 1;
+                }
+                (KeyCode::Backspace, _) if self.open_file_cursor > 0 => {
+                    self.open_file_path.remove(self.open_file_cursor - 1);
+                    self.open_file_cursor -= 1;
+                }
+                (KeyCode::Delete, _) if self.open_file_cursor < self.open_file_path.len() => {
+                    self.open_file_path.remove(self.open_file_cursor);
+                }
+                (KeyCode::Left, _) if self.open_file_cursor > 0 => {
+                    self.open_file_cursor -= 1;
+                }
+                (KeyCode::Right, _) if self.open_file_cursor < self.open_file_path.len() => {
+                    self.open_file_cursor += 1;
+                }
+                (KeyCode::Home, _) => {
+                    self.open_file_cursor = 0;
+                }
+                (KeyCode::End, _) => {
+                    self.open_file_cursor = self.open_file_path.len();
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Read the typed path, open it as a new tab, and switch to it.
+    fn open_file(&mut self) {
+        let path = self.open_file_path.trim().to_string();
+        self.mode = Mode::Normal;
+
+        if path.is_empty() {
+            return;
+        }
+
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                let filename = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&path)
+                    .to_string();
+                self.documents.push(Document::new(content, Some(filename)));
+                self.active_doc = self.documents.len() - 1;
+                self.open_file_path.clear();
+                self.open_file_cursor = 0;
+                self.exec_query();
+            }
+            Err(err) => {
+                self.transient_error = Some(format!("Could not open '{}': {}", path, err));
+            }
+        }
+    }
+
     fn init_tree_view(&mut self) {
-        let markdown_result = Markdown::from_markdown_str(&self.content);
+        let markdown_result = Markdown::from_markdown_str(&self.active_doc().content);
         match markdown_result {
             Ok(markdown) => {
                 self.tree_view = Some(TreeView::new(markdown.nodes));
             }
             Err(_) => {
-                self.error_msg = Some("Failed to parse markdown for tree view".to_string());
+                self.transient_error = Some("Failed to parse markdown for tree view".to_string());
             }
         }
     }
@@ -491,146 +732,101 @@ impl App {
             return;
         }
 
-        if let Some(sidebar) = &self.sidebar_tree_view {
-            let selected_item = sidebar.items().get(sidebar.selected_index());
-
-            if let Some(item) = selected_item {
-                if item.is_all_documents {
-                    self.query.clear();
-                    self.cursor_position = 0;
-                    self.exec_query();
-                } else if let Some(selected_node) = sidebar.get_selected_node()
-                    && let mq_markdown::Node::Heading(heading) = selected_node
-                {
-                    let section_content = self.extract_section_content(heading);
-                    self.query = format!(
-                        r#"import "section" | nodes | section::split({}) | section::title_contains("{}") | section::collect()"#,
-                        heading.depth,
-                        selected_node.value()
-                    );
-                    self.results = section_content;
-                    self.selected_idx = 0;
-                    self.cursor_position = self.query.len();
+        let active = self.active_doc;
+        let selection = self.documents[active]
+            .sidebar_tree_view
+            .as_ref()
+            .and_then(|sidebar| {
+                let selected_item = sidebar.items().get(sidebar.selected_index())?;
+                if selected_item.is_all_documents {
+                    return Some(SidebarSelection::AllDocuments);
                 }
+                let selected_node = sidebar.get_selected_node()?;
+                if let mq_markdown::Node::Heading(heading) = selected_node {
+                    Some(SidebarSelection::Heading(
+                        heading.clone(),
+                        selected_node.value(),
+                    ))
+                } else {
+                    None
+                }
+            });
+
+        match selection {
+            Some(SidebarSelection::AllDocuments) => {
+                self.query.clear();
+                self.cursor_position = 0;
+                self.exec_query();
             }
+            Some(SidebarSelection::Heading(heading, value)) => {
+                let section_content = self.documents[active].extract_section_content(&heading);
+                self.query = format!(
+                    r#"import "section" | nodes | section::split({}) | section::title_contains("{}") | section::collect()"#,
+                    heading.depth, value
+                );
+                self.documents[active].results = section_content;
+                self.documents[active].selected_idx = 0;
+                self.cursor_position = self.query.len();
+            }
+            None => {}
         }
     }
 
-    /// Extract section content from heading to the next same-level heading
-    fn extract_section_content(&self, heading: &mq_markdown::Heading) -> Vec<mq_markdown::Node> {
-        let mut section_nodes = Vec::new();
-        let mut found_heading = false;
-        let target_depth = heading.depth;
-
-        for node in &self.all_nodes {
-            if !found_heading {
-                // Check if this is our target heading
-                if let mq_markdown::Node::Heading(h) = node
-                    && h.depth == heading.depth
-                {
-                    let h_text: String = h.values.iter().map(|n| n.value()).collect();
-                    let target_text: String = heading.values.iter().map(|n| n.value()).collect();
-                    if h_text == target_text {
-                        found_heading = true;
-                        section_nodes.push(node.clone());
-                    }
-                }
-            } else {
-                // After finding the heading, collect nodes until next same-level heading
-                if let mq_markdown::Node::Heading(h) = node
-                    && h.depth <= target_depth
-                {
-                    // Found next same-level or higher-level heading, stop
-                    break;
-                }
-                section_nodes.push(node.clone());
-            }
-        }
-
-        section_nodes
-    }
-
-    fn init_sidebar_tree_view(&mut self) {
-        let markdown_result = Markdown::from_markdown_str(&self.content);
-        match markdown_result {
-            Ok(markdown) => {
-                // Store all nodes for section extraction
-                self.all_nodes = markdown.nodes.clone();
-
-                // Extract only heading nodes for the sidebar
-                let headers: Vec<mq_markdown::Node> = markdown
-                    .nodes
-                    .into_iter()
-                    .filter(|node| matches!(node, mq_markdown::Node::Heading(_)))
-                    .collect();
-
-                if !headers.is_empty() {
-                    let mut tree_view = TreeView::new(headers);
-                    tree_view.rebuild_items_with_all_documents(true);
-                    self.sidebar_tree_view = Some(tree_view);
-                }
-            }
-            Err(_) => {
-                // Silently fail for sidebar initialization
-            }
-        }
-    }
-
+    /// Execute the current query against every open document.
     pub fn exec_query(&mut self) {
         self.query_pending = false;
-        let mut engine: Engine = Engine::default();
-        engine.load_builtin_module();
         let start = Instant::now();
-        let markdown_result = Markdown::from_markdown_str(&self.content);
-        match markdown_result {
-            Ok(markdown) => {
-                if !self.query.is_empty() {
-                    let md_nodes = markdown
-                        .nodes
-                        .into_iter()
-                        .map(mq_lang::RuntimeValue::from)
-                        .collect::<Vec<_>>();
 
-                    match engine.eval(&self.query, md_nodes.into_iter()) {
-                        Ok(results) => {
-                            self.results = results
-                                .into_iter()
-                                .map(|runtime_value| match runtime_value {
-                                    mq_lang::RuntimeValue::Markdown(node, _) => *node,
-                                    _ => runtime_value.to_string().into(),
-                                })
-                                .collect();
-                            self.error_msg = None;
+        for doc in self.documents.iter_mut() {
+            let mut engine: Engine = Engine::default();
+            engine.load_builtin_module();
+            let markdown_result = Markdown::from_markdown_str(&doc.content);
+            match markdown_result {
+                Ok(markdown) => {
+                    if !self.query.is_empty() {
+                        let md_nodes = markdown
+                            .nodes
+                            .into_iter()
+                            .map(mq_lang::RuntimeValue::from)
+                            .collect::<Vec<_>>();
+
+                        match engine.eval(&self.query, md_nodes.into_iter()) {
+                            Ok(results) => {
+                                doc.results = results
+                                    .into_iter()
+                                    .map(|runtime_value| match runtime_value {
+                                        mq_lang::RuntimeValue::Markdown(node, _) => *node,
+                                        _ => runtime_value.to_string().into(),
+                                    })
+                                    .collect();
+                                doc.error_msg = None;
+                            }
+                            Err(err) => {
+                                doc.error_msg = Some(format!("Query error: {}", err));
+                                // Keep previous results
+                            }
                         }
-                        Err(err) => {
-                            self.error_msg = Some(format!("Query error: {}", err));
-                            // Keep previous results
-                        }
+                    } else {
+                        // Show all nodes when query is empty
+                        doc.results = markdown.nodes;
+                        doc.error_msg = None;
                     }
-                } else {
-                    // Show all nodes when query is empty
-                    self.results = markdown.nodes;
-                    self.error_msg = None;
+                }
+                Err(err) => {
+                    doc.error_msg = Some(format!("Markdown parse error: {}", err));
+                    doc.results = Vec::new();
                 }
             }
-            Err(err) => {
-                self.error_msg = Some(format!("Markdown parse error: {}", err));
-                self.results = Vec::new();
+
+            // Reset selected index if it's now out of bounds
+            if doc.selected_idx >= doc.results.len() {
+                doc.selected_idx = doc.results.len().saturating_sub(1);
             }
-        }
 
-        // Reset selected index if it's now out of bounds
-        if self.selected_idx >= self.results.len() {
-            self.selected_idx = if self.results.is_empty() {
-                0
-            } else {
-                self.results.len() - 1
-            };
-        }
-
-        // Advance past invisible nodes (nodes that render to nothing in combined output)
-        if !self.results.is_empty() {
-            self.selected_idx = self.next_visible(self.selected_idx, true);
+            // Advance past invisible nodes (nodes that render to nothing in combined output)
+            if !doc.results.is_empty() {
+                doc.selected_idx = Self::next_visible_in(&doc.results, doc.selected_idx, true);
+            }
         }
 
         self.last_exec_time = start.elapsed();
@@ -642,14 +838,14 @@ impl App {
         &self.query
     }
 
-    /// Get the current results
+    /// Get the current results (for the active document)
     pub fn results(&self) -> &[mq_markdown::Node] {
-        &self.results
+        &self.active_doc().results
     }
 
-    /// Get the currently selected result index
+    /// Get the currently selected result index (for the active document)
     pub fn selected_idx(&self) -> usize {
-        self.selected_idx
+        self.active_doc().selected_idx
     }
 
     /// Get the last execution time
@@ -657,9 +853,11 @@ impl App {
         self.last_exec_time
     }
 
-    /// Get the current error message, if any
+    /// Get the current error message, if any (for the active document)
     pub fn error_msg(&self) -> Option<&str> {
-        self.error_msg.as_deref()
+        self.transient_error
+            .as_deref()
+            .or_else(|| self.active_doc().error_msg.as_deref())
     }
 
     /// Get the current app mode
@@ -677,9 +875,9 @@ impl App {
         self.cursor_position
     }
 
-    /// Get the filename, if any
+    /// Get the filename of the active document, if any
     pub fn filename(&self) -> Option<&str> {
-        self.filename.as_deref()
+        self.active_doc().filename.as_deref()
     }
 
     /// Get the query history
@@ -698,7 +896,7 @@ impl App {
 
     #[cfg(test)]
     pub fn set_results(&mut self, results: Vec<mq_markdown::Node>) {
-        self.results = results;
+        self.active_doc_mut().results = results;
     }
 
     #[cfg(test)]
@@ -708,7 +906,7 @@ impl App {
 
     #[cfg(test)]
     pub fn set_error_msg(&mut self, msg: String) {
-        self.error_msg = Some(msg);
+        self.transient_error = Some(msg);
     }
 
     #[cfg(test)]
@@ -726,14 +924,14 @@ impl App {
         self.show_tree_sidebar
     }
 
-    /// Get the sidebar tree view, if available
+    /// Get the sidebar tree view of the active document, if available
     pub fn sidebar_tree_view(&self) -> Option<&TreeView> {
-        self.sidebar_tree_view.as_ref()
+        self.active_doc().sidebar_tree_view.as_ref()
     }
 
-    /// Get mutable reference to sidebar tree view
+    /// Get mutable reference to the active document's sidebar tree view
     pub fn sidebar_tree_view_mut(&mut self) -> Option<&mut TreeView> {
-        self.sidebar_tree_view.as_mut()
+        self.active_doc_mut().sidebar_tree_view.as_mut()
     }
 
     /// Toggle tree sidebar visibility
@@ -741,26 +939,81 @@ impl App {
         self.show_tree_sidebar = !self.show_tree_sidebar;
     }
 
+    /// Number of currently open documents (tabs)
+    pub fn document_count(&self) -> usize {
+        self.documents.len()
+    }
+
+    /// Index of the currently active document (tab)
+    pub fn active_doc_index(&self) -> usize {
+        self.active_doc
+    }
+
+    /// Display names (filenames) for all open documents, in order
+    pub fn document_names(&self) -> Vec<&str> {
+        self.documents.iter().map(|d| d.display_name()).collect()
+    }
+
+    /// Path currently being typed in Mode::OpenFile
+    pub fn open_file_path(&self) -> &str {
+        &self.open_file_path
+    }
+
+    /// Cursor position within the open-file path input
+    pub fn open_file_cursor(&self) -> usize {
+        self.open_file_cursor
+    }
+
+    /// Switch to the next tab (document), wrapping around
+    pub fn next_tab(&mut self) {
+        if self.documents.len() <= 1 {
+            return;
+        }
+        self.active_doc = (self.active_doc + 1) % self.documents.len();
+    }
+
+    /// Switch to the previous tab (document), wrapping around
+    pub fn prev_tab(&mut self) {
+        if self.documents.len() <= 1 {
+            return;
+        }
+        self.active_doc = if self.active_doc == 0 {
+            self.documents.len() - 1
+        } else {
+            self.active_doc - 1
+        };
+    }
+
     /// Move to next/previous visible node from current position.
     /// This skips invisible nodes until finding a visible one.
     fn next_visible_from_current(&self, forward: bool) -> usize {
-        let len = self.results.len();
+        Self::next_visible_from_current_in(
+            &self.active_doc().results,
+            self.active_doc().selected_idx,
+            forward,
+        )
+    }
+
+    fn next_visible_from_current_in(
+        results: &[mq_markdown::Node],
+        start_idx: usize,
+        forward: bool,
+    ) -> usize {
+        let len = results.len();
         if len == 0 {
             return 0;
         }
-
-        let start_idx = self.selected_idx;
 
         // Calculate the current rendered line position
         let current_line = if start_idx == 0 {
             0
         } else {
-            Markdown::new(self.results[..start_idx + 1].to_vec())
+            Markdown::new(results[..start_idx + 1].to_vec())
                 .to_string()
                 .lines()
                 .count()
                 .saturating_sub(
-                    Markdown::new(vec![self.results[start_idx].clone()])
+                    Markdown::new(vec![results[start_idx].clone()])
                         .to_string()
                         .lines()
                         .count()
@@ -779,13 +1032,13 @@ impl App {
             }
 
             // Check if this node is visible (renders to non-empty content)
-            let rendered = Markdown::new(vec![self.results[idx].clone()]).to_string();
+            let rendered = Markdown::new(vec![results[idx].clone()]).to_string();
             if !rendered.trim().is_empty() {
                 // Calculate the line position of this node
                 let node_line = if idx == 0 {
                     0
                 } else {
-                    Markdown::new(self.results[..idx + 1].to_vec())
+                    Markdown::new(results[..idx + 1].to_vec())
                         .to_string()
                         .lines()
                         .count()
@@ -806,7 +1059,11 @@ impl App {
     /// A node is invisible when `render_with_theme` skips it (renders to "" or only whitespace).
     /// Returns `start` unchanged if all results are invisible.
     fn next_visible(&self, start: usize, forward: bool) -> usize {
-        let len = self.results.len();
+        Self::next_visible_in(&self.active_doc().results, start, forward)
+    }
+
+    fn next_visible_in(results: &[mq_markdown::Node], start: usize, forward: bool) -> usize {
+        let len = results.len();
         if len == 0 {
             return 0;
         }
@@ -814,7 +1071,7 @@ impl App {
         let mut checked = 0;
 
         while checked < len {
-            let rendered = Markdown::new(vec![self.results[idx].clone()]).to_string();
+            let rendered = Markdown::new(vec![results[idx].clone()]).to_string();
 
             // A node is visible if it renders to non-empty, non-whitespace content
             // We need to check both the raw length and trimmed length
@@ -866,6 +1123,104 @@ mod tests {
     fn test_app_with_file() {
         let app = create_test_app_with_file();
         assert_eq!(app.filename(), Some("test.md"));
+    }
+
+    #[test]
+    fn test_app_with_multiple_files() {
+        let app = App::with_files(vec![
+            ("# One".to_string(), "one.md".to_string()),
+            ("# Two".to_string(), "two.md".to_string()),
+        ]);
+        assert_eq!(app.document_count(), 2);
+        assert_eq!(app.active_doc_index(), 0);
+        assert_eq!(app.filename(), Some("one.md"));
+        assert_eq!(app.document_names(), vec!["one.md", "two.md"]);
+    }
+
+    #[test]
+    fn test_tab_switching() {
+        let mut app = App::with_files(vec![
+            ("# One".to_string(), "one.md".to_string()),
+            ("# Two".to_string(), "two.md".to_string()),
+            ("# Three".to_string(), "three.md".to_string()),
+        ]);
+
+        assert_eq!(app.active_doc_index(), 0);
+        app.next_tab();
+        assert_eq!(app.active_doc_index(), 1);
+        app.next_tab();
+        assert_eq!(app.active_doc_index(), 2);
+        // Wraps around
+        app.next_tab();
+        assert_eq!(app.active_doc_index(), 0);
+
+        app.prev_tab();
+        assert_eq!(app.active_doc_index(), 2);
+    }
+
+    #[test]
+    fn test_tab_switching_keys() {
+        let mut app = App::with_files(vec![
+            ("# One".to_string(), "one.md".to_string()),
+            ("# Two".to_string(), "two.md".to_string()),
+        ]);
+
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::Right,
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }))
+        .unwrap();
+        assert_eq!(app.active_doc_index(), 1);
+
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::Left,
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }))
+        .unwrap();
+        assert_eq!(app.active_doc_index(), 0);
+
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }))
+        .unwrap();
+        assert_eq!(app.active_doc_index(), 1);
+
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::BackTab,
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }))
+        .unwrap();
+        assert_eq!(app.active_doc_index(), 0);
+    }
+
+    #[test]
+    fn test_query_applies_to_all_documents() {
+        let mut app = App::with_files(vec![
+            ("# One".to_string(), "one.md".to_string()),
+            ("# Two\n\nbody\n\n## Three".to_string(), "two.md".to_string()),
+        ]);
+
+        // Identity query, executed once, should populate results for every
+        // open document independently (based on each document's own content),
+        // not just the active one.
+        app.set_query(".".to_string());
+        app.exec_query();
+
+        assert_eq!(app.results().len(), 1);
+        assert!(app.error_msg().is_none());
+
+        app.next_tab();
+        assert_eq!(app.results().len(), 3);
+        assert!(app.error_msg().is_none());
     }
 
     #[test]
@@ -991,7 +1346,7 @@ mod tests {
             Node::from("result3"),
         ];
         app.set_results(test_results);
-        app.selected_idx = 1;
+        app.active_doc_mut().selected_idx = 1;
 
         // Test End
         let end_event = Event::Key(KeyEvent {
@@ -1302,7 +1657,7 @@ mod tests {
         let mut app = create_test_app();
         let test_results = vec!["result1".into(), Node::from("result2")];
         app.set_results(test_results);
-        app.selected_idx = 1;
+        app.active_doc_mut().selected_idx = 1;
 
         let down_event = Event::Key(KeyEvent {
             code: KeyCode::Down,
@@ -1391,6 +1746,71 @@ mod tests {
         app.handle_event(tree_toggle_event).unwrap();
         assert_eq!(app.mode(), Mode::TreeView);
         assert!(app.tree_view().is_some());
+    }
+
+    #[test]
+    fn test_open_file_mode_enter_and_cancel() {
+        let mut app = create_test_app();
+
+        let o_event = Event::Key(KeyEvent {
+            code: KeyCode::Char('o'),
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        app.handle_event(o_event).unwrap();
+        assert_eq!(app.mode(), Mode::OpenFile);
+
+        let escape_event = Event::Key(KeyEvent {
+            code: KeyCode::Esc,
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        app.handle_event(escape_event).unwrap();
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.document_count(), 1);
+    }
+
+    #[test]
+    fn test_open_file_mode_opens_new_tab() {
+        let mut app = create_test_app();
+
+        let tmp_dir = std::env::temp_dir();
+        let file_path = tmp_dir.join(format!("mq_tui_test_{}.md", std::process::id()));
+        std::fs::write(&file_path, "# Opened\n").unwrap();
+
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::Char('o'),
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }))
+        .unwrap();
+
+        for c in file_path.to_string_lossy().chars() {
+            app.handle_event(Event::Key(KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers: KeyModifiers::NONE,
+                kind: crossterm::event::KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            }))
+            .unwrap();
+        }
+
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }))
+        .unwrap();
+
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.document_count(), 2);
+        assert_eq!(app.active_doc_index(), 1);
+
+        std::fs::remove_file(&file_path).ok();
     }
 
     #[test]
