@@ -5,15 +5,18 @@ use mq_lang::Engine;
 use mq_markdown::Markdown;
 use ratatui::prelude::*;
 use std::{
+    cell::Cell,
     fmt::Display,
     io::Stdout,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
 use crate::{
     event::{EventHandler, EventHandlerExt},
-    ui::{draw_ui, treeview::TreeView},
+    ui::{draw_ui, preview, treeview::TreeView},
     util,
+    watcher::{self, FileWatcher},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +26,7 @@ pub enum Mode {
     Help,
     TreeView,
     OpenFile,
+    Preview,
 }
 
 impl Display for Mode {
@@ -33,6 +37,7 @@ impl Display for Mode {
             Mode::Help => write!(f, "HELP"),
             Mode::TreeView => write!(f, "TREE VIEW"),
             Mode::OpenFile => write!(f, "OPEN FILE"),
+            Mode::Preview => write!(f, "PREVIEW"),
         }
     }
 }
@@ -53,6 +58,8 @@ struct Document {
     all_nodes: Vec<mq_markdown::Node>,
     /// Sidebar tree view (headers only)
     sidebar_tree_view: Option<TreeView>,
+    /// Path on disk this document was loaded from (used for `--watch`)
+    path: Option<PathBuf>,
 }
 
 impl Document {
@@ -65,6 +72,22 @@ impl Document {
             error_msg: None,
             all_nodes: Vec::new(),
             sidebar_tree_view: None,
+            path: None,
+        };
+        doc.init_sidebar_tree_view();
+        doc
+    }
+
+    fn with_path(content: String, filename: Option<String>, path: PathBuf) -> Self {
+        let mut doc = Self {
+            content,
+            filename,
+            results: Vec::new(),
+            selected_idx: 0,
+            error_msg: None,
+            all_nodes: Vec::new(),
+            sidebar_tree_view: None,
+            path: Some(path),
         };
         doc.init_sidebar_tree_view();
         doc
@@ -178,6 +201,14 @@ pub struct App {
     open_file_path: String,
     /// Cursor position within open_file_path
     open_file_cursor: usize,
+    /// Current scroll offset (in lines) of the rendered preview (Mode::Preview)
+    preview_scroll: u16,
+    /// Height of the preview viewport from the last draw, used to clamp scrolling
+    preview_viewport_height: Cell<u16>,
+    /// Whether watched files should be reloaded automatically when changed on disk
+    watch: bool,
+    /// Event-driven watcher (OS file system notifications) backing `watch`
+    file_watcher: Option<FileWatcher>,
 }
 
 impl App {
@@ -194,6 +225,16 @@ impl App {
         let documents = files
             .into_iter()
             .map(|(content, filename)| Document::new(content, Some(filename)))
+            .collect();
+        Self::from_documents(documents)
+    }
+
+    /// Create an App with multiple open documents (tabs), each as (content, filename, path).
+    /// The path is used to support `--watch`.
+    pub fn with_files_with_paths(files: Vec<(String, String, PathBuf)>) -> Self {
+        let documents = files
+            .into_iter()
+            .map(|(content, filename, path)| Document::with_path(content, Some(filename), path))
             .collect();
         Self::from_documents(documents)
     }
@@ -218,6 +259,10 @@ impl App {
             debounce_duration: Duration::from_millis(300),
             open_file_path: String::new(),
             open_file_cursor: 0,
+            preview_scroll: 0,
+            preview_viewport_height: Cell::new(0),
+            watch: false,
+            file_watcher: None,
         }
     }
 
@@ -246,11 +291,88 @@ impl App {
             if self.query_pending && self.last_exec.elapsed() >= self.debounce_duration {
                 self.exec_query();
             }
+
+            // Cheap, non-blocking: just drains any pending OS file system
+            // notifications, no polling involved.
+            self.check_for_file_changes();
         }
 
         util::restore_terminal()?;
 
         Ok(())
+    }
+
+    /// Enable or disable watching opened files for changes on disk. Uses the
+    /// OS's native file system notifications (inotify / FSEvents /
+    /// ReadDirectoryChangesW) rather than polling.
+    pub fn set_watch(&mut self, watch: bool) {
+        self.watch = watch;
+
+        if !watch {
+            self.file_watcher = None;
+            return;
+        }
+
+        if self.file_watcher.is_none() {
+            match FileWatcher::new() {
+                Ok(mut watcher) => {
+                    for doc in &self.documents {
+                        if let Some(path) = &doc.path {
+                            watcher.watch_file(path);
+                        }
+                    }
+                    self.file_watcher = Some(watcher);
+                }
+                Err(err) => {
+                    self.transient_error = Some(format!("Could not watch files: {err}"));
+                    self.watch = false;
+                }
+            }
+        }
+    }
+
+    /// Whether watch mode is enabled.
+    pub fn watch(&self) -> bool {
+        self.watch
+    }
+
+    /// Reload any document whose source file was reported as changed by the
+    /// file watcher, re-running the current query if anything changed.
+    fn check_for_file_changes(&mut self) {
+        let Some(watcher) = &self.file_watcher else {
+            return;
+        };
+        let changed_paths = watcher.drain_changed_paths();
+        if changed_paths.is_empty() {
+            return;
+        }
+
+        let mut changed = false;
+        for doc in self.documents.iter_mut() {
+            let Some(path) = doc.path.clone() else {
+                continue;
+            };
+            if !changed_paths
+                .iter()
+                .any(|p| watcher::paths_refer_to_same_file(p, &path))
+            {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(&path)
+                && content != doc.content
+            {
+                doc.content = content;
+                doc.init_sidebar_tree_view();
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.exec_query();
+            if self.mode == Mode::TreeView {
+                self.init_tree_view();
+            }
+        }
     }
 
     fn draw(&self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> miette::Result<()> {
@@ -269,6 +391,7 @@ impl App {
             Mode::Help => self.handle_help_mode_event(event),
             Mode::TreeView => self.handle_tree_view_mode_event(event),
             Mode::OpenFile => self.handle_open_file_mode_event(event),
+            Mode::Preview => self.handle_preview_mode_event(event),
         }
     }
 
@@ -317,6 +440,11 @@ impl App {
                 (KeyCode::Char('t'), _) => {
                     self.mode = Mode::TreeView;
                     self.init_tree_view();
+                }
+                // Toggle rendered preview
+                (KeyCode::Char('p'), _) => {
+                    self.mode = Mode::Preview;
+                    self.preview_scroll = 0;
                 }
                 // Toggle tree sidebar
                 (KeyCode::Char('s'), _) => {
@@ -368,8 +496,8 @@ impl App {
                     // Enter key can be used for future actions if needed
                 }
                 (KeyCode::PageDown, _) if !self.active_doc().results.is_empty() => {
-                    let next =
-                        (self.active_doc().selected_idx + 10).min(self.active_doc().results.len() - 1);
+                    let next = (self.active_doc().selected_idx + 10)
+                        .min(self.active_doc().results.len() - 1);
                     let idx = self.next_visible(next, true);
                     self.active_doc_mut().selected_idx = idx;
                 }
@@ -413,7 +541,8 @@ impl App {
                                 Some("Error: Could not copy to clipboard".to_string());
                         }
                     } else {
-                        self.transient_error = Some("Error: Could not access clipboard".to_string());
+                        self.transient_error =
+                            Some("Error: Could not access clipboard".to_string());
                     }
                 }
                 (KeyCode::Char('Y'), _) if !self.active_doc().results.is_empty() => {
@@ -430,7 +559,8 @@ impl App {
                                 Some("Error: Could not copy to clipboard".to_string());
                         }
                     } else {
-                        self.transient_error = Some("Error: Could not access clipboard".to_string());
+                        self.transient_error =
+                            Some("Error: Could not access clipboard".to_string());
                     }
                 }
                 _ => {}
@@ -702,7 +832,12 @@ impl App {
                     .and_then(|n| n.to_str())
                     .unwrap_or(&path)
                     .to_string();
-                self.documents.push(Document::new(content, Some(filename)));
+                let path_buf = PathBuf::from(&path);
+                if let Some(watcher) = &mut self.file_watcher {
+                    watcher.watch_file(&path_buf);
+                }
+                self.documents
+                    .push(Document::with_path(content, Some(filename), path_buf));
                 self.active_doc = self.documents.len() - 1;
                 self.open_file_path.clear();
                 self.open_file_cursor = 0;
@@ -724,6 +859,105 @@ impl App {
                 self.transient_error = Some("Failed to parse markdown for tree view".to_string());
             }
         }
+    }
+
+    fn handle_preview_mode_event(&mut self, event: Event) -> miette::Result<()> {
+        if let Event::Mouse(mouse_event) = event {
+            match mouse_event.kind {
+                MouseEventKind::ScrollDown => {
+                    self.preview_scroll = self.preview_scroll.saturating_add(3);
+                }
+                MouseEventKind::ScrollUp => {
+                    self.preview_scroll = self.preview_scroll.saturating_sub(3);
+                }
+                _ => {}
+            }
+            self.clamp_preview_scroll();
+            return Ok(());
+        }
+
+        if let Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event
+        {
+            match (code, modifiers) {
+                // Exit preview mode
+                (KeyCode::Esc, _) | (KeyCode::Char('p'), _) => {
+                    self.mode = Mode::Normal;
+                }
+                // Quit
+                (KeyCode::Char('q'), _) => {
+                    self.should_quit = true;
+                }
+                // Switch tabs
+                (KeyCode::Right, _) | (KeyCode::Tab, _) => {
+                    self.next_tab();
+                    self.preview_scroll = 0;
+                }
+                (KeyCode::Left, _) | (KeyCode::BackTab, _) => {
+                    self.prev_tab();
+                    self.preview_scroll = 0;
+                }
+                // Scroll
+                (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                    self.preview_scroll = self.preview_scroll.saturating_add(1);
+                }
+                (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                    self.preview_scroll = self.preview_scroll.saturating_sub(1);
+                }
+                (KeyCode::PageDown, _) => {
+                    self.preview_scroll = self.preview_scroll.saturating_add(10);
+                }
+                (KeyCode::PageUp, _) => {
+                    self.preview_scroll = self.preview_scroll.saturating_sub(10);
+                }
+                // Jump to top/bottom (vim-style)
+                (KeyCode::Char('g'), _) => {
+                    self.preview_scroll = 0;
+                }
+                (KeyCode::Char('G'), _) => {
+                    self.preview_scroll = u16::MAX;
+                }
+                // Show help
+                (KeyCode::Char('?'), _) | (KeyCode::F(1), _) => {
+                    self.mode = Mode::Help;
+                }
+                _ => {}
+            }
+            self.clamp_preview_scroll();
+        }
+
+        Ok(())
+    }
+
+    /// Get the current preview scroll offset (in rendered lines)
+    pub fn preview_scroll(&self) -> u16 {
+        self.preview_scroll
+    }
+
+    /// Record the height of the preview viewport from the last draw, so that
+    /// scrolling can be clamped to the document's actual rendered length.
+    pub fn set_preview_viewport_height(&self, height: u16) {
+        self.preview_viewport_height.set(height);
+    }
+
+    /// Get the content of the active document (used to render the preview)
+    pub fn active_doc_content(&self) -> &str {
+        &self.active_doc().content
+    }
+
+    fn preview_total_lines(&self) -> usize {
+        preview::render_preview(&self.active_doc().content).len()
+    }
+
+    fn clamp_preview_scroll(&mut self) {
+        let total = self.preview_total_lines();
+        let viewport = self.preview_viewport_height.get().saturating_sub(2).max(1) as usize;
+        let max_scroll = total.saturating_sub(viewport) as u16;
+        self.preview_scroll = self.preview_scroll.min(max_scroll);
     }
 
     /// Update results based on current sidebar selection
@@ -1206,7 +1440,10 @@ mod tests {
     fn test_query_applies_to_all_documents() {
         let mut app = App::with_files(vec![
             ("# One".to_string(), "one.md".to_string()),
-            ("# Two\n\nbody\n\n## Three".to_string(), "two.md".to_string()),
+            (
+                "# Two\n\nbody\n\n## Three".to_string(),
+                "two.md".to_string(),
+            ),
         ]);
 
         // Identity query, executed once, should populate results for every
@@ -2072,5 +2309,124 @@ mod tests {
         assert_eq!(app.query(), "jk."); // Should still be "jk", not "jkk"
 
         // Verify the fix: query is "jk" not "jjkk"
+    }
+
+    #[test]
+    fn test_preview_mode_toggle_and_exit() {
+        let mut app = create_test_app();
+        assert_eq!(app.mode(), Mode::Normal);
+
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::Char('p'),
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }))
+        .unwrap();
+        assert_eq!(app.mode(), Mode::Preview);
+
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::Esc,
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }))
+        .unwrap();
+        assert_eq!(app.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn test_preview_mode_scroll_navigation() {
+        let mut app = App::new("# Title\n\nSome body text".to_string());
+        app.set_mode(Mode::Preview);
+
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }))
+        .unwrap();
+        assert_eq!(app.preview_scroll(), 1);
+
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::Char('g'),
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }))
+        .unwrap();
+        assert_eq!(app.preview_scroll(), 0);
+    }
+
+    #[test]
+    fn test_preview_renders_active_document_content() {
+        let app = App::new("# Hello".to_string());
+        assert_eq!(app.active_doc_content(), "# Hello");
+    }
+
+    #[test]
+    fn test_watch_disabled_by_default() {
+        let app = create_test_app();
+        assert!(!app.watch());
+    }
+
+    #[test]
+    fn test_watch_reloads_changed_file() {
+        let tmp_dir = std::env::temp_dir();
+        let file_path = tmp_dir.join(format!("mq_tui_watch_test_{}.md", std::process::id()));
+        std::fs::write(&file_path, "# Original\n").unwrap();
+
+        let mut app = App::with_files_with_paths(vec![(
+            "# Original\n".to_string(),
+            "watch.md".to_string(),
+            file_path.clone(),
+        )]);
+        app.set_watch(true);
+
+        // Give the OS watcher a moment to register before writing.
+        std::thread::sleep(Duration::from_millis(100));
+        std::fs::write(&file_path, "# Updated\n").unwrap();
+
+        // The debouncer waits ~300ms before emitting; poll a bit longer than
+        // that for the change to be picked up.
+        let mut reloaded = false;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(50));
+            app.check_for_file_changes();
+            if app.active_doc_content() == "# Updated\n" {
+                reloaded = true;
+                break;
+            }
+        }
+
+        std::fs::remove_file(&file_path).ok();
+        assert!(
+            reloaded,
+            "expected the document to reload after the file changed on disk"
+        );
+    }
+
+    #[test]
+    fn test_watch_without_changes_keeps_content() {
+        let tmp_dir = std::env::temp_dir();
+        let file_path = tmp_dir.join(format!(
+            "mq_tui_watch_test_nochange_{}.md",
+            std::process::id()
+        ));
+        std::fs::write(&file_path, "# Original\n").unwrap();
+
+        let mut app = App::with_files_with_paths(vec![(
+            "# Original\n".to_string(),
+            "watch.md".to_string(),
+            file_path.clone(),
+        )]);
+        app.set_watch(true);
+
+        app.check_for_file_changes();
+
+        assert_eq!(app.active_doc_content(), "# Original\n");
+
+        std::fs::remove_file(&file_path).ok();
     }
 }

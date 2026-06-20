@@ -20,6 +20,7 @@ log = "0.4.31"
 miette = {version = "7.6.0", features = ["fancy"]}
 mq-lang = "0.6.1"
 mq-markdown = "0.6.1"
+notify-debouncer-mini = "0.7.0"
 ratatui = "0.30.0"
 unicode-width = "0.2.2"
 
