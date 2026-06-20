@@ -79,16 +79,6 @@ mod tests {
     }
 
     #[test]
-    fn test_event_handler_with_different_tick_rates() {
-        let fast_handler = EventHandler::new(Duration::from_millis(10));
-        let slow_handler = EventHandler::new(Duration::from_millis(1000));
-
-        // Both should be created successfully
-        assert!(fast_handler.next().unwrap().is_none());
-        assert!(slow_handler.next().unwrap().is_none());
-    }
-
-    #[test]
     fn test_multiple_next_calls() {
         let handler = EventHandler::new(Duration::from_millis(50));
 

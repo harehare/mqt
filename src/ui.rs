@@ -1,3 +1,4 @@
+pub mod preview;
 pub mod treeview;
 
 use ratatui::{
@@ -52,6 +53,9 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
             if let Some(tree_view) = app.tree_view() {
                 tree_view.render(frame, results_area);
             }
+        }
+        Mode::Preview => {
+            draw_preview(frame, app, results_area);
         }
         _ => {
             // Show sidebar if enabled
@@ -262,6 +266,31 @@ fn draw_results_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+/// Draw a best-effort rendered preview of the active document's full source.
+fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
+    app.set_preview_viewport_height(area.height);
+
+    let lines = preview::render_preview(app.active_doc_content());
+    let total_lines = lines.len();
+    let inner_height = area.height.saturating_sub(2).max(1);
+    let max_scroll = total_lines.saturating_sub(inner_height as usize) as u16;
+    let scroll = app.preview_scroll().min(max_scroll);
+
+    let title = format!(
+        "Preview - {} (↑/k ↓/j scroll, g/G top/bottom, p/Esc to exit)",
+        app.filename().unwrap_or("untitled")
+    );
+
+    let block = Block::default().title(title).borders(Borders::ALL);
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+
+    frame.render_widget(paragraph, area);
+}
+
 /// Check if a line is a markdown header (starts with #)
 fn is_markdown_header(line: &str) -> bool {
     let trimmed = line.trim_start();
@@ -279,8 +308,11 @@ fn draw_status_line(frame: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
 
+    let watch_info = if app.watch() { "👀 watching | " } else { "" };
+
     let status = format!(
-        "{}{} results | Execution time: {:.2}ms | Press q to quit",
+        "{}{}{} results | Execution time: {:.2}ms | Press q to quit",
+        watch_info,
         doc_info,
         results_count,
         exec_time.as_secs_f64() * 1000.0
@@ -308,7 +340,7 @@ fn draw_title_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw(" | "),
         Span::styled(
-            "Press 's' for sidebar, 't' for tree view, 'o' to open a file, '?' for help",
+            "Press 's' for sidebar, 't' for tree view, 'p' for preview, 'o' to open a file, '?' for help",
             Style::default().fg(Color::Gray),
         ),
     ];
@@ -508,6 +540,30 @@ fn draw_help_screen(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" - Exit tree view"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Preview Mode",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::UNDERLINED),
+        )]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("p", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Toggle rendered preview"),
+        ]),
+        Line::from(vec![
+            Span::styled("↑/k ↓/j", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Scroll preview"),
+        ]),
+        Line::from(vec![
+            Span::styled("g/G", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Jump to top/bottom"),
+        ]),
+        Line::from(vec![
+            Span::styled("Esc/p", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Exit preview"),
         ]),
     ];
 

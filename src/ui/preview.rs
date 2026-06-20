@@ -1,0 +1,535 @@
+//! Best-effort rendering of raw Markdown source into styled `ratatui` lines,
+//! so the TUI can show something close to a rendered preview without needing
+//! a full CommonMark renderer. Operates line-by-line on the source text
+//! (preserving the user's original layout) and applies simple inline styling
+//! for emphasis, code spans, links, and images.
+
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
+
+/// Render raw Markdown `content` into a list of styled lines suitable for
+/// display in a scrollable `Paragraph`.
+pub fn render_preview(content: &str) -> Vec<Line<'static>> {
+    let src_lines: Vec<&str> = content.lines().collect();
+    let mut lines = Vec::with_capacity(src_lines.len());
+    let mut in_code_block = false;
+    let mut code_fence = String::new();
+    let mut i = 0;
+
+    while i < src_lines.len() {
+        let raw = src_lines[i];
+        let trimmed = raw.trim_start();
+
+        if in_code_block {
+            if trimmed.starts_with(code_fence.as_str()) {
+                in_code_block = false;
+                lines.push(Line::from(Span::styled(
+                    code_fence.clone(),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    raw.to_string(),
+                    Style::default().fg(Color::Green),
+                )));
+            }
+            i += 1;
+            continue;
+        }
+
+        if let Some(fence) = fence_marker(trimmed) {
+            in_code_block = true;
+            let lang = trimmed.trim_start_matches(['`', '~']).trim().to_string();
+            code_fence = fence;
+            let title = if lang.is_empty() {
+                code_fence.clone()
+            } else {
+                format!("{} {}", code_fence, lang)
+            };
+            lines.push(Line::from(Span::styled(
+                title,
+                Style::default().fg(Color::DarkGray),
+            )));
+            i += 1;
+            continue;
+        }
+
+        if let Some((depth, text)) = heading(trimmed) {
+            lines.push(Line::from(Span::styled(text, heading_style(depth))));
+            i += 1;
+            continue;
+        }
+
+        if is_horizontal_rule(trimmed) {
+            lines.push(Line::from(Span::styled(
+                "─".repeat(60),
+                Style::default().fg(Color::DarkGray),
+            )));
+            i += 1;
+            continue;
+        }
+
+        // Table header row, immediately followed by an alignment separator row.
+        if raw.contains('|')
+            && src_lines
+                .get(i + 1)
+                .is_some_and(|next| is_table_separator(next))
+        {
+            lines.push(Line::from(table_row_spans(
+                raw,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            i += 1;
+            continue;
+        }
+
+        if is_table_separator(raw) {
+            lines.push(Line::from(Span::styled(
+                "─".repeat(raw.trim().len().clamp(8, 80)),
+                Style::default().fg(Color::DarkGray),
+            )));
+            i += 1;
+            continue;
+        }
+
+        if raw.contains('|') && raw.trim().starts_with('|') {
+            lines.push(Line::from(table_row_spans(raw, Style::default())));
+            i += 1;
+            continue;
+        }
+
+        if let Some((level, rest)) = blockquote_prefix(raw) {
+            let mut spans = vec![Span::styled(
+                "┃ ".repeat(level.max(1)),
+                Style::default().fg(Color::DarkGray),
+            )];
+            spans.extend(parse_inline(
+                rest,
+                Style::default()
+                    .fg(Color::Gray)
+                    .add_modifier(Modifier::ITALIC),
+            ));
+            lines.push(Line::from(spans));
+            i += 1;
+            continue;
+        }
+
+        if let Some((indent, marker, checked, rest)) = list_item(raw) {
+            let mut spans = vec![Span::raw(" ".repeat(indent))];
+            spans.push(Span::styled(marker, Style::default().fg(Color::Yellow)));
+            if let Some(is_checked) = checked {
+                spans.push(Span::styled(
+                    if is_checked { "☑ " } else { "☐ " },
+                    Style::default().fg(Color::Cyan),
+                ));
+            }
+            spans.extend(parse_inline(rest, Style::default()));
+            lines.push(Line::from(spans));
+            i += 1;
+            continue;
+        }
+
+        if raw.trim().is_empty() {
+            lines.push(Line::from(""));
+            i += 1;
+            continue;
+        }
+
+        lines.push(Line::from(parse_inline(raw, Style::default())));
+        i += 1;
+    }
+
+    lines
+}
+
+fn fence_marker(trimmed: &str) -> Option<String> {
+    if trimmed.starts_with("```") {
+        Some("```".to_string())
+    } else if trimmed.starts_with("~~~") {
+        Some("~~~".to_string())
+    } else {
+        None
+    }
+}
+
+fn heading(trimmed: &str) -> Option<(usize, String)> {
+    if !trimmed.starts_with('#') {
+        return None;
+    }
+    let depth = trimmed.chars().take_while(|&c| c == '#').count();
+    if depth == 0 || depth > 6 {
+        return None;
+    }
+    let rest = &trimmed[depth..];
+    if !rest.is_empty() && !rest.starts_with(' ') {
+        return None;
+    }
+    let text = rest.trim().trim_end_matches('#').trim().to_string();
+    Some((depth, text))
+}
+
+fn heading_style(depth: usize) -> Style {
+    match depth {
+        1 => Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        2 => Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+        3 => Style::default()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::BOLD),
+        _ => Style::default()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::ITALIC),
+    }
+}
+
+fn is_horizontal_rule(trimmed: &str) -> bool {
+    let t = trimmed.trim();
+    if t.len() < 3 {
+        return false;
+    }
+    let first = t.chars().next().unwrap();
+    (first == '-' || first == '*' || first == '_') && t.chars().all(|c| c == first)
+}
+
+fn is_table_separator(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() || !t.contains('|') {
+        return false;
+    }
+    t.trim_matches('|').split('|').all(|cell| {
+        let cell = cell.trim();
+        !cell.is_empty() && cell.chars().all(|c| c == '-' || c == ':')
+    })
+}
+
+fn table_row_spans(raw: &str, cell_style: Style) -> Vec<Span<'static>> {
+    let cells: Vec<&str> = raw.trim().trim_matches('|').split('|').collect();
+    let mut spans = Vec::new();
+    for (idx, cell) in cells.iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+        }
+        spans.extend(parse_inline(cell.trim(), cell_style));
+    }
+    spans
+}
+
+fn blockquote_prefix(raw: &str) -> Option<(usize, &str)> {
+    let mut rest = raw.trim_start();
+    if !rest.starts_with('>') {
+        return None;
+    }
+    let mut level = 0;
+    while let Some(r) = rest.strip_prefix('>') {
+        level += 1;
+        rest = r.trim_start();
+    }
+    Some((level, rest))
+}
+
+fn list_item(raw: &str) -> Option<(usize, String, Option<bool>, &str)> {
+    let indent = raw.len() - raw.trim_start().len();
+    let trimmed = raw.trim_start();
+
+    if let Some(rest) = ["- ", "* ", "+ "]
+        .iter()
+        .find_map(|p| trimmed.strip_prefix(p))
+    {
+        let (checked, rest) = checkbox(rest);
+        return Some((indent, "• ".to_string(), checked, rest));
+    }
+
+    let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if !digits.is_empty() {
+        let after = &trimmed[digits.len()..];
+        if let Some(rest) = [". ", ") "].iter().find_map(|p| after.strip_prefix(p)) {
+            let (checked, rest) = checkbox(rest);
+            return Some((indent, format!("{}. ", digits), checked, rest));
+        }
+    }
+
+    None
+}
+
+fn checkbox(s: &str) -> (Option<bool>, &str) {
+    if let Some(rest) = s.strip_prefix("[ ] ") {
+        return (Some(false), rest);
+    }
+    if let Some(rest) = ["[x] ", "[X] "].iter().find_map(|p| s.strip_prefix(p)) {
+        return (Some(true), rest);
+    }
+    (None, s)
+}
+
+/// Render a single line of inline Markdown (emphasis, code spans, links,
+/// images, strikethrough) into styled spans, falling back to plain text for
+/// anything it doesn't recognize.
+fn parse_inline(text: &str, base: Style) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut spans = Vec::new();
+    let mut buf = String::new();
+    let mut i = 0;
+
+    while i < len {
+        if chars[i] == '!'
+            && i + 1 < len
+            && chars[i + 1] == '['
+            && let Some((alt, _url, consumed)) = parse_link_like(&chars, i + 1)
+        {
+            flush(&mut buf, &mut spans, base);
+            spans.push(Span::styled(format!("🖼 {}", alt), base.fg(Color::Magenta)));
+            i += 1 + consumed;
+            continue;
+        }
+
+        if chars[i] == '['
+            && let Some((label, _url, consumed)) = parse_link_like(&chars, i)
+        {
+            flush(&mut buf, &mut spans, base);
+            spans.push(Span::styled(
+                label,
+                base.fg(Color::Blue).add_modifier(Modifier::UNDERLINED),
+            ));
+            i += consumed;
+            continue;
+        }
+
+        if chars[i] == '`'
+            && let Some((code, consumed)) = parse_delim(&chars, i, 1)
+        {
+            flush(&mut buf, &mut spans, base);
+            spans.push(Span::styled(
+                code,
+                Style::default().fg(Color::White).bg(Color::Rgb(40, 40, 40)),
+            ));
+            i += consumed;
+            continue;
+        }
+
+        if chars[i] == '~'
+            && i + 1 < len
+            && chars[i + 1] == '~'
+            && let Some((inner, consumed)) = parse_delim(&chars, i, 2)
+        {
+            flush(&mut buf, &mut spans, base);
+            spans.extend(parse_inline(
+                &inner,
+                base.add_modifier(Modifier::CROSSED_OUT),
+            ));
+            i += consumed;
+            continue;
+        }
+
+        if (chars[i] == '*' || chars[i] == '_')
+            && i + 1 < len
+            && chars[i + 1] == chars[i]
+            && let Some((inner, consumed)) = parse_delim(&chars, i, 2)
+            && !inner.is_empty()
+        {
+            flush(&mut buf, &mut spans, base);
+            spans.extend(parse_inline(&inner, base.add_modifier(Modifier::BOLD)));
+            i += consumed;
+            continue;
+        }
+
+        if (chars[i] == '*' || chars[i] == '_')
+            && let Some((inner, consumed)) = parse_delim(&chars, i, 1)
+            && !inner.is_empty()
+        {
+            flush(&mut buf, &mut spans, base);
+            spans.extend(parse_inline(&inner, base.add_modifier(Modifier::ITALIC)));
+            i += consumed;
+            continue;
+        }
+
+        buf.push(chars[i]);
+        i += 1;
+    }
+
+    flush(&mut buf, &mut spans, base);
+    spans
+}
+
+fn flush(buf: &mut String, spans: &mut Vec<Span<'static>>, style: Style) {
+    if !buf.is_empty() {
+        spans.push(Span::styled(std::mem::take(buf), style));
+    }
+}
+
+/// Find a closing run of `width` identical delimiter chars starting at `start`,
+/// returning the text between the delimiters and the total chars consumed
+/// (including both delimiter runs).
+fn parse_delim(chars: &[char], start: usize, width: usize) -> Option<(String, usize)> {
+    let delim = &chars[start..start + width];
+    let mut j = start + width;
+    while j + width <= chars.len() {
+        if &chars[j..j + width] == delim {
+            let inner: String = chars[start + width..j].iter().collect();
+            return Some((inner, j + width - start));
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Parse a `[label](url)` or `[label]` construct starting at `chars[start] == '['`.
+/// Returns the label text, the URL (empty if omitted), and total chars consumed.
+fn parse_link_like(chars: &[char], start: usize) -> Option<(String, String, usize)> {
+    let mut j = start + 1;
+    while j < chars.len() && chars[j] != ']' && chars[j] != '\n' {
+        j += 1;
+    }
+    if j >= chars.len() || chars[j] != ']' {
+        return None;
+    }
+    let label: String = chars[start + 1..j].iter().collect();
+
+    if j + 1 < chars.len() && chars[j + 1] == '(' {
+        let mut k = j + 2;
+        while k < chars.len() && chars[k] != ')' {
+            k += 1;
+        }
+        if k < chars.len() {
+            let url: String = chars[j + 2..k].iter().collect();
+            return Some((label, url, k + 1 - start));
+        }
+    }
+
+    Some((label, String::new(), j + 1 - start))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn test_heading_levels() {
+        let lines = render_preview("# One\n## Two\n###### Six");
+        assert_eq!(line_text(&lines[0]), "One");
+        assert_eq!(line_text(&lines[1]), "Two");
+        assert_eq!(line_text(&lines[2]), "Six");
+        assert!(
+            lines[0].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+    }
+
+    #[test]
+    fn test_bold_and_italic() {
+        let lines = render_preview("**bold** and _italic_ text");
+        let text = line_text(&lines[0]);
+        assert_eq!(text, "bold and italic text");
+
+        let bold_span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "bold")
+            .unwrap();
+        assert!(bold_span.style.add_modifier.contains(Modifier::BOLD));
+
+        let italic_span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "italic")
+            .unwrap();
+        assert!(italic_span.style.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn test_inline_code() {
+        let lines = render_preview("Use `cargo build` to compile");
+        let code_span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "cargo build")
+            .unwrap();
+        assert_eq!(code_span.style.bg, Some(Color::Rgb(40, 40, 40)));
+    }
+
+    #[test]
+    fn test_link_shows_label_only() {
+        let lines = render_preview("[mq](https://github.com/harehare/mq)");
+        assert_eq!(line_text(&lines[0]), "mq");
+    }
+
+    #[test]
+    fn test_unordered_list_item() {
+        let lines = render_preview("- first item");
+        assert_eq!(line_text(&lines[0]), "• first item");
+    }
+
+    #[test]
+    fn test_ordered_list_item() {
+        let lines = render_preview("1. first item");
+        assert_eq!(line_text(&lines[0]), "1. first item");
+    }
+
+    #[test]
+    fn test_task_list_checked() {
+        let lines = render_preview("- [x] done\n- [ ] todo");
+        assert_eq!(line_text(&lines[0]), "• ☑ done");
+        assert_eq!(line_text(&lines[1]), "• ☐ todo");
+    }
+
+    #[test]
+    fn test_blockquote() {
+        let lines = render_preview("> quoted text");
+        assert_eq!(line_text(&lines[0]), "┃ quoted text");
+    }
+
+    #[test]
+    fn test_code_block() {
+        let lines = render_preview("```rust\nfn main() {}\n```");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(line_text(&lines[1]), "fn main() {}");
+        assert_eq!(lines[1].spans[0].style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn test_horizontal_rule() {
+        let lines = render_preview("---");
+        assert!(line_text(&lines[0]).chars().all(|c| c == '─'));
+    }
+
+    #[test]
+    fn test_table() {
+        let lines = render_preview("| A | B |\n| - | - |\n| 1 | 2 |");
+        assert_eq!(line_text(&lines[0]), "A │ B");
+        assert_eq!(line_text(&lines[2]), "1 │ 2");
+    }
+
+    #[test]
+    fn test_strikethrough() {
+        let lines = render_preview("~~removed~~");
+        let span = &lines[0].spans[0];
+        assert_eq!(span.content.as_ref(), "removed");
+        assert!(span.style.add_modifier.contains(Modifier::CROSSED_OUT));
+    }
+
+    #[test]
+    fn test_image_shows_alt() {
+        let lines = render_preview("![alt text](image.png)");
+        assert_eq!(line_text(&lines[0]), "🖼 alt text");
+    }
+
+    #[test]
+    fn test_empty_lines_preserved() {
+        let lines = render_preview("a\n\nb");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(line_text(&lines[1]), "");
+    }
+}

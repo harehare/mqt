@@ -19,6 +19,9 @@ Interactive terminal interface for querying and manipulating Markdown content
 
 - 🔍 **Interactive Query Mode** - Real-time Markdown querying with instant results
 - 🌳 **Tree View** - Visual exploration of Markdown document structure
+- 👀 **Rendered Preview** - View Markdown rendered close to its final look, right in the terminal
+- 📺 **Watch Mode** - Automatically reload files when they change on disk
+- 📑 **Multi-file Tabs** - Open several Markdown files at once and switch between them
 - ⚡ **Vim-style Navigation** - Efficient keyboard shortcuts (j/k, hjkl)
 - 📋 **Clipboard Integration** - Copy results directly to clipboard
 - 🎨 **Syntax Highlighting** - Color-coded display of different Markdown elements
@@ -87,6 +90,30 @@ all tabs: whatever query you run is applied to every open file at once, so
 switching tabs shows that file's own filtered results without retyping the
 query. Press `o` at any time to open another file as a new tab.
 
+### Watch Mode
+
+Pass `--watch` (or `-w`) to automatically reload files when they change on disk:
+
+```bash
+mq-tui --watch README.md
+```
+
+The status line shows a `👀 watching` indicator while watch mode is active.
+Each open file is watched using your OS's native file system notifications
+(inotify on Linux, FSEvents on macOS, ReadDirectoryChangesW on Windows) -
+no polling involved, so changes are picked up almost instantly. When a file
+is modified externally (e.g. saved from your editor, including atomic
+save-and-rename), its content is reloaded and the current query is re-run
+automatically. Watch mode is not available when reading from stdin.
+
+### Rendered Preview
+
+Press `p` to switch to a rendered preview of the active document - headings,
+bold/italic text, lists, blockquotes, code blocks, tables, and links are
+styled to look close to their final rendered form instead of raw Markdown
+syntax. Use `↑`/`k`, `↓`/`j`, `PageUp`/`PageDown`, or `g`/`G` to scroll, and
+press `p` or `Esc` to return to normal mode.
+
 ### Query Examples
 
 Once in the TUI, press `:` to enter query mode and try these queries:
@@ -121,6 +148,7 @@ Once in the TUI, press `:` to enter query mode and try these queries:
 | `:`         | Enter query mode                     |
 | `?` / `F1`  | Show help screen                     |
 | `t`         | Toggle tree view mode                |
+| `p`         | Toggle rendered preview mode          |
 | `d`         | Toggle detail view for selected item |
 | `y`         | Copy results to clipboard            |
 | `Ctrl+L`    | Clear current query                  |
@@ -171,6 +199,19 @@ Once in the TUI, press `:` to enter query mode and try these queries:
 | `Home` / `End`         | Jump to start/end of path        |
 | `Backspace` / `Delete` | Edit path text                   |
 
+### Preview Mode
+
+| Key             | Action                       |
+| --------------- | ----------------------------- |
+| `↑` / `k`       | Scroll up                     |
+| `↓` / `j`       | Scroll down                   |
+| `PageUp`        | Scroll up (10 lines)          |
+| `PageDown`      | Scroll down (10 lines)        |
+| `g`             | Jump to top                   |
+| `G`             | Jump to bottom                |
+| `←` / `→`       | Switch tabs (when multiple files are open) |
+| `Esc` / `p`     | Exit preview                  |
+
 ## Modes
 
 ### Normal Mode
@@ -184,6 +225,10 @@ Activated by pressing `:`. Type your mq query and press Enter to execute. The qu
 ### Tree View Mode
 
 Activated by pressing `t`. Displays the Markdown document structure as an expandable tree, showing the hierarchy of headings, lists, and other elements.
+
+### Preview Mode
+
+Activated by pressing `p`. Renders the active document's Markdown source close to its final look - styled headings, emphasis, lists, blockquotes, code blocks, tables, and links - instead of raw Markdown syntax.
 
 ### Help Mode
 
@@ -217,6 +262,13 @@ The tree view mode provides a visual representation of your Markdown document's 
 - 🟣 **Magenta**: Links
 - 🟡 **Yellow**: Images
 - 🔵 **Cyan**: Code blocks
+
+### Watch Mode
+
+Run with `--watch` to keep open files in sync with disk. This is handy when
+editing a Markdown file in another editor while exploring it with `mq-tui` -
+save your changes and they show up immediately, with the current query
+re-applied to the updated content.
 
 ## Configuration
 
