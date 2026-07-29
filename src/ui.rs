@@ -13,7 +13,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Mode};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Break `line` into chunks of at most `width` display columns, preserving
 /// all original characters/spacing exactly (no word-boundary reflow), so
@@ -636,13 +636,26 @@ fn draw_detail_view(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(detail_text, area);
 }
 
+fn max_line_width(lines: &[Line]) -> u16 {
+    lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.width())
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0) as u16
+}
+
 fn draw_help_screen(frame: &mut Frame) {
     let area = frame.area();
 
     let help_block = Block::default()
         .title("Keyboard Controls")
         .borders(Borders::ALL)
-        .border_type(BorderType::Double)
+        .border_type(BorderType::Plain)
         .style(Style::default().bg(Color::Black));
 
     let left_column = vec![
@@ -654,11 +667,11 @@ fn draw_help_screen(frame: &mut Frame) {
         )]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("↑/k", Style::default().fg(Color::Yellow)),
+            Span::styled("Up/k", Style::default().fg(Color::Yellow)),
             Span::raw(" - Move up"),
         ]),
         Line::from(vec![
-            Span::styled("↓/j", Style::default().fg(Color::Yellow)),
+            Span::styled("Down/j", Style::default().fg(Color::Yellow)),
             Span::raw(" - Move down"),
         ]),
         Line::from(vec![
@@ -698,7 +711,7 @@ fn draw_help_screen(frame: &mut Frame) {
             Span::raw(" - Exit query mode"),
         ]),
         Line::from(vec![
-            Span::styled("↑/↓", Style::default().fg(Color::Yellow)),
+            Span::styled("Up/Down", Style::default().fg(Color::Yellow)),
             Span::raw(" - Navigate query history"),
         ]),
         Line::from(vec![
@@ -796,7 +809,7 @@ fn draw_help_screen(frame: &mut Frame) {
         )]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("←/→", Style::default().fg(Color::Yellow)),
+            Span::styled("Left/Right", Style::default().fg(Color::Yellow)),
             Span::raw(" - Switch tabs"),
         ]),
         Line::from(vec![
@@ -824,11 +837,11 @@ fn draw_help_screen(frame: &mut Frame) {
             Span::raw(" - Toggle sidebar (headers)"),
         ]),
         Line::from(vec![
-            Span::styled("↑/k", Style::default().fg(Color::Yellow)),
+            Span::styled("Up/k", Style::default().fg(Color::Yellow)),
             Span::raw(" - Move up in tree"),
         ]),
         Line::from(vec![
-            Span::styled("↓/j", Style::default().fg(Color::Yellow)),
+            Span::styled("Down/j", Style::default().fg(Color::Yellow)),
             Span::raw(" - Move down in tree"),
         ]),
         Line::from(vec![
@@ -860,7 +873,7 @@ fn draw_help_screen(frame: &mut Frame) {
             Span::raw(" - Toggle rendered preview"),
         ]),
         Line::from(vec![
-            Span::styled("↑/k ↓/j", Style::default().fg(Color::Yellow)),
+            Span::styled("Up/k Down/j", Style::default().fg(Color::Yellow)),
             Span::raw(" - Scroll preview"),
         ]),
         Line::from(vec![
@@ -877,8 +890,13 @@ fn draw_help_screen(frame: &mut Frame) {
         ]),
     ];
 
+    const COLUMN_GAP: u16 = 4;
+
+    let left_width = max_line_width(&left_column);
+    let right_width = max_line_width(&right_column);
+
     let content_lines = left_column.len().max(right_column.len());
-    let width = area.width.clamp(30, 90);
+    let width = (left_width + COLUMN_GAP + right_width + 2).clamp(30, area.width.max(30));
     let height = (content_lines as u16 + 2).clamp(15, area.height);
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
@@ -890,11 +908,15 @@ fn draw_help_screen(frame: &mut Frame) {
 
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([
+            Constraint::Length(left_width),
+            Constraint::Length(COLUMN_GAP),
+            Constraint::Length(right_width),
+        ])
         .split(inner);
 
     frame.render_widget(Paragraph::new(left_column).alignment(Alignment::Left), columns[0]);
-    frame.render_widget(Paragraph::new(right_column).alignment(Alignment::Left), columns[1]);
+    frame.render_widget(Paragraph::new(right_column).alignment(Alignment::Left), columns[2]);
 }
 
 fn draw_error_popup(frame: &mut Frame, error: &str) {
