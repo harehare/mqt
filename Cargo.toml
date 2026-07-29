@@ -22,6 +22,8 @@ mq-lang = "0.6.5"
 mq-markdown = "0.6.5"
 notify-debouncer-mini = "0.7.0"
 ratatui = "0.30.0"
+serde = {version = "1", features = ["derive"]}
+toml = "0.9"
 unicode-width = "0.2.2"
 
 [profile.release]

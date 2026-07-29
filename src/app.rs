@@ -1,7 +1,7 @@
 use arboard::Clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
 use miette::IntoDiagnostic;
-use mq_lang::Engine;
+use mq_lang::{BUILTIN_FUNCTION_DOC, BUILTIN_SELECTOR_DOC, Engine};
 use mq_markdown::Markdown;
 use ratatui::prelude::*;
 use std::{
@@ -27,6 +27,12 @@ pub enum Mode {
     TreeView,
     OpenFile,
     Preview,
+    /// Incremental search ('/'), entered from Normal or TreeView mode.
+    Search,
+    /// Prompting for a name under which to save the current query.
+    SaveQuery,
+    /// Browsing/running/deleting saved (favorite) queries.
+    Favorites,
 }
 
 impl Display for Mode {
@@ -38,8 +44,18 @@ impl Display for Mode {
             Mode::TreeView => write!(f, "TREE VIEW"),
             Mode::OpenFile => write!(f, "OPEN FILE"),
             Mode::Preview => write!(f, "PREVIEW"),
+            Mode::Search => write!(f, "SEARCH"),
+            Mode::SaveQuery => write!(f, "SAVE QUERY"),
+            Mode::Favorites => write!(f, "FAVORITES"),
         }
     }
+}
+
+/// A named query saved to disk so it can be reused across sessions.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SavedQuery {
+    pub name: String,
+    pub query: String,
 }
 
 /// A single open Markdown document (tab).
@@ -209,6 +225,38 @@ pub struct App {
     watch: bool,
     /// Event-driven watcher (OS file system notifications) backing `watch`
     file_watcher: Option<FileWatcher>,
+    /// Current incremental search text (Mode::Search)
+    search_query: String,
+    /// Cursor position within `search_query`
+    search_cursor: usize,
+    /// Mode to return to when leaving Mode::Search (Normal or TreeView)
+    search_return_mode: Mode,
+    /// Selected index (in the active document's results, or the tree view)
+    /// recorded when entering Mode::Search, so Esc can restore it
+    search_origin_idx: usize,
+    /// Last committed search term, used by `n` / `N` to repeat the search
+    last_search: Option<String>,
+    /// Name being typed for the query currently being saved (Mode::SaveQuery)
+    save_query_name: String,
+    /// Cursor position within `save_query_name`
+    save_query_cursor: usize,
+    /// Queries saved across sessions (loaded from disk)
+    saved_queries: Vec<SavedQuery>,
+    /// Currently selected index in Mode::Favorites
+    favorites_selected: usize,
+    /// Show raw source side-by-side with the rendered preview (Mode::Preview)
+    preview_split: bool,
+    /// Active Tab-completion cycle, if the user is currently cycling through candidates
+    completion_cycle: Option<CompletionCycle>,
+}
+
+/// Tracks an in-progress Tab-completion cycle so repeated Tab presses step
+/// through the same candidate list instead of recomputing it against
+/// whatever text the previous candidate left behind.
+struct CompletionCycle {
+    start: usize,
+    matches: Vec<(String, String)>,
+    index: usize,
 }
 
 impl App {
@@ -263,6 +311,17 @@ impl App {
             preview_viewport_height: Cell::new(0),
             watch: false,
             file_watcher: None,
+            search_query: String::new(),
+            search_cursor: 0,
+            search_return_mode: Mode::Normal,
+            search_origin_idx: 0,
+            last_search: None,
+            save_query_name: String::new(),
+            save_query_cursor: 0,
+            saved_queries: crate::favorites::load(),
+            favorites_selected: 0,
+            preview_split: false,
+            completion_cycle: None,
         }
     }
 
@@ -392,6 +451,9 @@ impl App {
             Mode::TreeView => self.handle_tree_view_mode_event(event),
             Mode::OpenFile => self.handle_open_file_mode_event(event),
             Mode::Preview => self.handle_preview_mode_event(event),
+            Mode::Search => self.handle_search_mode_event(event),
+            Mode::SaveQuery => self.handle_save_query_mode_event(event),
+            Mode::Favorites => self.handle_favorites_mode_event(event),
         }
     }
 
@@ -459,6 +521,32 @@ impl App {
                     self.mode = Mode::OpenFile;
                     self.open_file_path.clear();
                     self.open_file_cursor = 0;
+                }
+                // Incremental search within the current results
+                (KeyCode::Char('/'), _) => {
+                    self.search_return_mode = Mode::Normal;
+                    self.search_origin_idx = self.active_doc().selected_idx;
+                    self.search_query.clear();
+                    self.search_cursor = 0;
+                    self.mode = Mode::Search;
+                }
+                // Repeat last search
+                (KeyCode::Char('n'), _) if self.last_search.is_some() => {
+                    self.repeat_search(true);
+                }
+                (KeyCode::Char('N'), _) if self.last_search.is_some() => {
+                    self.repeat_search(false);
+                }
+                // Save the current query under a name
+                (KeyCode::Char('S'), _) => {
+                    self.mode = Mode::SaveQuery;
+                    self.save_query_name.clear();
+                    self.save_query_cursor = 0;
+                }
+                // Browse saved (favorite) queries
+                (KeyCode::Char('F'), _) => {
+                    self.favorites_selected = 0;
+                    self.mode = Mode::Favorites;
                 }
                 // Switch tabs
                 (KeyCode::Right, _) | (KeyCode::Tab, _) => {
@@ -599,46 +687,52 @@ impl App {
                     self.query_pending = false;
                     self.exec_query();
                 }
-                // Switch tabs without leaving query mode
-                (KeyCode::Tab, _) => {
-                    self.next_tab();
-                }
-                (KeyCode::BackTab, _) => {
-                    self.prev_tab();
-                }
+                // Tab/Shift+Tab step forward/backward through completion
+                // candidates for the current word; falls back to switching
+                // tabs when there's nothing to complete.
+                (KeyCode::Tab, _) => self.cycle_completion(true),
+                (KeyCode::BackTab, _) => self.cycle_completion(false),
                 // Edit query
                 (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                    self.completion_cycle = None;
                     self.query.insert(self.cursor_position, c);
                     self.cursor_position += 1;
                     self.last_exec = Instant::now();
                     self.query_pending = true;
                 }
                 (KeyCode::Backspace, _) if self.cursor_position > 0 => {
+                    self.completion_cycle = None;
                     self.query.remove(self.cursor_position - 1);
                     self.cursor_position -= 1;
                     self.last_exec = Instant::now();
                     self.query_pending = true;
                 }
                 (KeyCode::Delete, _) if self.cursor_position < self.query.len() => {
+                    self.completion_cycle = None;
                     self.query.remove(self.cursor_position);
                     self.last_exec = Instant::now();
                     self.query_pending = true;
                 }
                 // Move cursor
                 (KeyCode::Left, _) if self.cursor_position > 0 => {
+                    self.completion_cycle = None;
                     self.cursor_position -= 1;
                 }
                 (KeyCode::Right, _) if self.cursor_position < self.query.len() => {
+                    self.completion_cycle = None;
                     self.cursor_position += 1;
                 }
                 (KeyCode::Home, _) => {
+                    self.completion_cycle = None;
                     self.cursor_position = 0;
                 }
                 (KeyCode::End, _) => {
+                    self.completion_cycle = None;
                     self.cursor_position = self.query.len();
                 }
                 // Navigate history
                 (KeyCode::Up, _) if !self.query_history.is_empty() => {
+                    self.completion_cycle = None;
                     match self.history_position {
                         None => {
                             self.history_position = Some(self.query_history.len() - 1);
@@ -653,6 +747,7 @@ impl App {
                     self.cursor_position = self.query.len();
                 }
                 (KeyCode::Down, _) => {
+                    self.completion_cycle = None;
                     if let Some(pos) = self.history_position {
                         if pos < self.query_history.len() - 1 {
                             self.history_position = Some(pos + 1);
@@ -670,6 +765,46 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Advance (or, if `forward` is false, step back) the Tab-completion
+    /// cycle for the word at the cursor, starting a new cycle if none is
+    /// active. Falls back to switching tabs if there's nothing to complete.
+    fn cycle_completion(&mut self, forward: bool) {
+        if self.completion_cycle.is_none() {
+            let matches = self.query_completions();
+            if matches.is_empty() {
+                if forward {
+                    self.next_tab();
+                } else {
+                    self.prev_tab();
+                }
+                return;
+            }
+            let (start, _) = Self::word_range_at_cursor(&self.query, self.cursor_position);
+            self.completion_cycle = Some(CompletionCycle {
+                start,
+                matches,
+                index: 0,
+            });
+        } else if let Some(cycle) = &mut self.completion_cycle {
+            let len = cycle.matches.len();
+            cycle.index = if forward {
+                (cycle.index + 1) % len
+            } else if cycle.index == 0 {
+                len - 1
+            } else {
+                cycle.index - 1
+            };
+        }
+
+        let cycle = self.completion_cycle.as_ref().unwrap();
+        let name = cycle.matches[cycle.index].0.clone();
+        let start = cycle.start;
+        self.query.replace_range(start..self.cursor_position, &name);
+        self.cursor_position = start + name.len();
+        self.last_exec = Instant::now();
+        self.query_pending = true;
     }
 
     fn handle_help_mode_event(&mut self, event: Event) -> miette::Result<()> {
@@ -758,6 +893,21 @@ impl App {
                 // Show help
                 (KeyCode::Char('?'), _) | (KeyCode::F(1), _) => {
                     self.mode = Mode::Help;
+                }
+                // Incremental search within the tree
+                (KeyCode::Char('/'), _) => {
+                    self.search_return_mode = Mode::TreeView;
+                    self.search_origin_idx =
+                        self.tree_view.as_ref().map(|t| t.selected_index()).unwrap_or(0);
+                    self.search_query.clear();
+                    self.search_cursor = 0;
+                    self.mode = Mode::Search;
+                }
+                (KeyCode::Char('n'), _) if self.last_search.is_some() => {
+                    self.repeat_search(true);
+                }
+                (KeyCode::Char('N'), _) if self.last_search.is_some() => {
+                    self.repeat_search(false);
                 }
                 _ => {}
             }
@@ -925,12 +1075,21 @@ impl App {
                 (KeyCode::Char('?'), _) | (KeyCode::F(1), _) => {
                     self.mode = Mode::Help;
                 }
+                // Toggle source/preview split
+                (KeyCode::Char('s'), _) => {
+                    self.preview_split = !self.preview_split;
+                }
                 _ => {}
             }
             self.clamp_preview_scroll();
         }
 
         Ok(())
+    }
+
+    /// Whether the preview shows raw source side-by-side with the rendered output
+    pub fn preview_split(&self) -> bool {
+        self.preview_split
     }
 
     /// Get the current preview scroll offset (in rendered lines)
@@ -1148,6 +1307,12 @@ impl App {
         self.cursor_position = position;
     }
 
+    /// Seed saved queries directly, bypassing disk load/save, for tests.
+    #[cfg(test)]
+    pub fn set_saved_queries(&mut self, queries: Vec<SavedQuery>) {
+        self.saved_queries = queries;
+    }
+
     /// Get the tree view, if available
     pub fn tree_view(&self) -> Option<&TreeView> {
         self.tree_view.as_ref()
@@ -1325,6 +1490,385 @@ impl App {
         }
 
         start // all invisible: stay put
+    }
+
+    /// Range of the identifier-like word (`[A-Za-z0-9_.]`) ending at `cursor`.
+    fn word_range_at_cursor(query: &str, cursor: usize) -> (usize, usize) {
+        let cursor = cursor.min(query.len());
+        let mut start = cursor;
+        while start > 0 {
+            let c = query[..start].chars().last().unwrap();
+            if c.is_alphanumeric() || c == '_' || c == '.' {
+                start -= c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        (start, cursor)
+    }
+
+    /// Completion candidates (name, description) for the word at the cursor:
+    /// selectors (`.h`, ...) if it starts with `.`, else builtin functions.
+    pub fn query_completions(&self) -> Vec<(String, String)> {
+        let (start, end) = Self::word_range_at_cursor(&self.query, self.cursor_position);
+        let word = &self.query[start..end];
+        if word.is_empty() {
+            return Vec::new();
+        }
+
+        let mut matches: Vec<(String, String)> = if word.starts_with('.') {
+            BUILTIN_SELECTOR_DOC
+                .iter()
+                .filter(|(name, _)| name.starts_with(word))
+                .map(|(name, doc)| (name.to_string(), doc.description.to_string()))
+                .collect()
+        } else {
+            BUILTIN_FUNCTION_DOC
+                .iter()
+                .filter(|(name, _)| name.starts_with(word))
+                .map(|(name, doc)| (name.to_string(), doc.description.to_string()))
+                .collect()
+        };
+        matches.sort();
+        matches.truncate(8);
+        matches
+    }
+
+    /// Completion candidates to display: the active cycle's list while the
+    /// user is Tab-cycling, otherwise a fresh match against the cursor word.
+    pub fn active_completions(&self) -> Vec<(String, String)> {
+        match &self.completion_cycle {
+            Some(cycle) => cycle.matches.clone(),
+            None => self.query_completions(),
+        }
+    }
+
+    /// Index within `active_completions()` that is currently selected.
+    pub fn completion_selected_index(&self) -> usize {
+        self.completion_cycle.as_ref().map_or(0, |c| c.index)
+    }
+
+    fn handle_search_mode_event(&mut self, event: Event) -> miette::Result<()> {
+        if let Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event
+        {
+            match (code, modifiers) {
+                (KeyCode::Esc, _) => {
+                    self.restore_search_origin();
+                    self.mode = self.search_return_mode;
+                }
+                (KeyCode::Enter, _) => {
+                    if !self.search_query.is_empty() {
+                        self.last_search = Some(self.search_query.clone());
+                    }
+                    self.mode = self.search_return_mode;
+                }
+                (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                    self.search_query.insert(self.search_cursor, c);
+                    self.search_cursor += 1;
+                    self.apply_incremental_search();
+                }
+                (KeyCode::Backspace, _) if self.search_cursor > 0 => {
+                    self.search_query.remove(self.search_cursor - 1);
+                    self.search_cursor -= 1;
+                    self.apply_incremental_search();
+                }
+                (KeyCode::Delete, _) if self.search_cursor < self.search_query.len() => {
+                    self.search_query.remove(self.search_cursor);
+                    self.apply_incremental_search();
+                }
+                (KeyCode::Left, _) if self.search_cursor > 0 => {
+                    self.search_cursor -= 1;
+                }
+                (KeyCode::Right, _) if self.search_cursor < self.search_query.len() => {
+                    self.search_cursor += 1;
+                }
+                (KeyCode::Home, _) => {
+                    self.search_cursor = 0;
+                }
+                (KeyCode::End, _) => {
+                    self.search_cursor = self.search_query.len();
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Re-search from the origin position as the search text changes.
+    fn apply_incremental_search(&mut self) {
+        if self.search_query.is_empty() {
+            self.restore_search_origin();
+            return;
+        }
+
+        match self.search_return_mode {
+            Mode::TreeView => {
+                if let Some(tree_view) = &mut self.tree_view
+                    && let Some(idx) =
+                        tree_view.find_match(self.search_origin_idx, true, &self.search_query)
+                {
+                    tree_view.set_selected_index(idx);
+                }
+            }
+            _ => {
+                let results = &self.active_doc().results;
+                if let Some(idx) =
+                    Self::find_match_idx(results, self.search_origin_idx, true, &self.search_query)
+                {
+                    self.active_doc_mut().selected_idx = idx;
+                }
+            }
+        }
+    }
+
+    /// Restore the selection to before Mode::Search was entered (Esc).
+    fn restore_search_origin(&mut self) {
+        match self.search_return_mode {
+            Mode::TreeView => {
+                if let Some(tree_view) = &mut self.tree_view {
+                    tree_view.set_selected_index(self.search_origin_idx);
+                }
+            }
+            _ => {
+                self.active_doc_mut().selected_idx = self.search_origin_idx;
+            }
+        }
+    }
+
+    /// `n` / `N`: jump to the next/previous match of `last_search`.
+    fn repeat_search(&mut self, forward: bool) {
+        let Some(term) = self.last_search.clone() else {
+            return;
+        };
+
+        // Step past the current position so we don't re-select the same match.
+        fn step(current: usize, len: usize, forward: bool) -> Option<usize> {
+            if len == 0 {
+                return None;
+            }
+            Some(if forward {
+                (current + 1) % len
+            } else if current == 0 {
+                len - 1
+            } else {
+                current - 1
+            })
+        }
+
+        match self.search_return_mode {
+            Mode::TreeView => {
+                if let Some(tree_view) = &mut self.tree_view
+                    && let Some(start) = step(tree_view.selected_index(), tree_view.items().len(), forward)
+                    && let Some(idx) = tree_view.find_match(start, forward, &term)
+                {
+                    tree_view.set_selected_index(idx);
+                }
+            }
+            _ => {
+                let results = &self.active_doc().results;
+                if let Some(start) = step(self.active_doc().selected_idx, results.len(), forward)
+                    && let Some(idx) = Self::find_match_idx(results, start, forward, &term)
+                {
+                    self.active_doc_mut().selected_idx = idx;
+                }
+            }
+        }
+    }
+
+    /// Nearest result containing `term` (case-insensitive) from `start`, wrapping.
+    fn find_match_idx(
+        results: &[mq_markdown::Node],
+        start: usize,
+        forward: bool,
+        term: &str,
+    ) -> Option<usize> {
+        let len = results.len();
+        if len == 0 || term.is_empty() {
+            return None;
+        }
+        let term_lower = term.to_lowercase();
+        let start = start.min(len - 1);
+        let mut idx = start;
+
+        for step in 0..len {
+            if step > 0 {
+                idx = if forward {
+                    (idx + 1) % len
+                } else if idx == 0 {
+                    len - 1
+                } else {
+                    idx - 1
+                };
+            }
+            let rendered = Markdown::new(vec![results[idx].clone()])
+                .to_string()
+                .to_lowercase();
+            if rendered.contains(&term_lower) {
+                return Some(idx);
+            }
+        }
+
+        None
+    }
+
+    /// Current incremental search text
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    /// Cursor position within the search text
+    pub fn search_cursor(&self) -> usize {
+        self.search_cursor
+    }
+
+    /// The last committed search term, if any (used to highlight matches)
+    pub fn last_search(&self) -> Option<&str> {
+        self.last_search.as_deref()
+    }
+
+    fn handle_save_query_mode_event(&mut self, event: Event) -> miette::Result<()> {
+        if let Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event
+        {
+            match (code, modifiers) {
+                (KeyCode::Esc, _) => {
+                    self.mode = Mode::Normal;
+                }
+                (KeyCode::Enter, _) => {
+                    let name = self.save_query_name.trim().to_string();
+                    if !name.is_empty() {
+                        self.saved_queries.retain(|q| q.name != name);
+                        self.saved_queries.push(SavedQuery {
+                            name,
+                            query: self.query.clone(),
+                        });
+                        if let Err(err) = crate::favorites::save(&self.saved_queries) {
+                            self.transient_error =
+                                Some(format!("Could not save query: {err}"));
+                        }
+                    }
+                    self.mode = Mode::Normal;
+                }
+                (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                    self.save_query_name.insert(self.save_query_cursor, c);
+                    self.save_query_cursor += 1;
+                }
+                (KeyCode::Backspace, _) if self.save_query_cursor > 0 => {
+                    self.save_query_name.remove(self.save_query_cursor - 1);
+                    self.save_query_cursor -= 1;
+                }
+                (KeyCode::Delete, _) if self.save_query_cursor < self.save_query_name.len() => {
+                    self.save_query_name.remove(self.save_query_cursor);
+                }
+                (KeyCode::Left, _) if self.save_query_cursor > 0 => {
+                    self.save_query_cursor -= 1;
+                }
+                (KeyCode::Right, _) if self.save_query_cursor < self.save_query_name.len() => {
+                    self.save_query_cursor += 1;
+                }
+                (KeyCode::Home, _) => {
+                    self.save_query_cursor = 0;
+                }
+                (KeyCode::End, _) => {
+                    self.save_query_cursor = self.save_query_name.len();
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_favorites_mode_event(&mut self, event: Event) -> miette::Result<()> {
+        if let Event::Key(KeyEvent {
+            code,
+            modifiers: _,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event
+        {
+            match code {
+                KeyCode::Esc | KeyCode::Char('F') => {
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Char('q') => {
+                    self.should_quit = true;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if self.favorites_selected + 1 < self.saved_queries.len() {
+                        self.favorites_selected += 1;
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.favorites_selected = self.favorites_selected.saturating_sub(1);
+                }
+                KeyCode::Enter => {
+                    if let Some(saved) = self.saved_queries.get(self.favorites_selected) {
+                        self.query = saved.query.clone();
+                        self.cursor_position = self.query.len();
+                        self.mode = Mode::Normal;
+                        self.exec_query();
+                    }
+                }
+                KeyCode::Char('d') if self.favorites_selected < self.saved_queries.len() => {
+                    self.saved_queries.remove(self.favorites_selected);
+                    if let Err(err) = crate::favorites::save(&self.saved_queries) {
+                        self.transient_error =
+                            Some(format!("Could not update saved queries: {err}"));
+                    }
+                    self.favorites_selected = self
+                        .favorites_selected
+                        .min(self.saved_queries.len().saturating_sub(1));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Text currently typed for the name of the query being saved
+    pub fn save_query_name(&self) -> &str {
+        &self.save_query_name
+    }
+
+    /// Cursor position within the save-query name input
+    pub fn save_query_cursor(&self) -> usize {
+        self.save_query_cursor
+    }
+
+    /// Saved (favorite) queries, in order
+    pub fn saved_queries(&self) -> &[SavedQuery] {
+        &self.saved_queries
+    }
+
+    /// Currently selected index in Mode::Favorites
+    pub fn favorites_selected(&self) -> usize {
+        self.favorites_selected
+    }
+
+    /// Mode to return to when leaving Mode::Search; also what it searches.
+    pub fn search_return_mode(&self) -> Mode {
+        self.search_return_mode
+    }
+
+    /// Search term to highlight/jump to: in-progress text, else last committed.
+    pub fn active_search_term(&self) -> Option<&str> {
+        if self.mode == Mode::Search {
+            Some(&self.search_query)
+        } else {
+            self.last_search.as_deref()
+        }
     }
 }
 #[cfg(test)]
@@ -2428,5 +2972,278 @@ mod tests {
         assert_eq!(app.active_doc_content(), "# Original\n");
 
         std::fs::remove_file(&file_path).ok();
+    }
+
+    fn key_press(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        })
+    }
+
+    fn key(code: KeyCode) -> Event {
+        key_press(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn test_query_completions_match_selector_prefix() {
+        let mut app = create_test_app();
+        app.set_query(".h".to_string());
+        app.set_cursor_position(2);
+
+        let completions = app.query_completions();
+        assert!(completions.iter().any(|(name, _)| name == ".h"));
+        assert!(completions.iter().all(|(name, _)| name.starts_with(".h")));
+    }
+
+    #[test]
+    fn test_query_completions_match_function_prefix() {
+        let mut app = create_test_app();
+        app.set_query("flat".to_string());
+        app.set_cursor_position(4);
+
+        let completions = app.query_completions();
+        assert!(completions.iter().any(|(name, _)| name == "flatten"));
+    }
+
+    #[test]
+    fn test_query_completions_empty_word_has_no_suggestions() {
+        let mut app = create_test_app();
+        app.set_query("select(.a) | ".to_string());
+        app.set_cursor_position(13);
+
+        assert!(app.query_completions().is_empty());
+    }
+
+    #[test]
+    fn test_tab_accepts_top_completion_in_query_mode() {
+        let mut app = create_test_app();
+        app.set_mode(Mode::Query);
+        app.set_query("flat".to_string());
+        app.set_cursor_position(4);
+
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+
+        assert_eq!(app.query(), "flatten");
+        assert_eq!(app.cursor_position(), "flatten".len());
+    }
+
+    #[test]
+    fn test_tab_cycles_through_multiple_completions() {
+        let mut app = create_test_app();
+        app.set_mode(Mode::Query);
+        app.set_query("base64".to_string());
+        app.set_cursor_position(6);
+
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.query(), "base64");
+
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.query(), "base64d");
+
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.query(), "base64url");
+
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.query(), "base64urld");
+
+        // Wraps back around to the first candidate.
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.query(), "base64");
+    }
+
+    #[test]
+    fn test_shift_tab_cycles_backward() {
+        let mut app = create_test_app();
+        app.set_mode(Mode::Query);
+        app.set_query("base64".to_string());
+        app.set_cursor_position(6);
+
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.query(), "base64");
+
+        // Backward from the first candidate wraps to the last.
+        app.handle_event(key(KeyCode::BackTab)).unwrap();
+        assert_eq!(app.query(), "base64urld");
+
+        app.handle_event(key(KeyCode::BackTab)).unwrap();
+        assert_eq!(app.query(), "base64url");
+    }
+
+    #[test]
+    fn test_typing_after_completion_starts_a_fresh_cycle() {
+        let mut app = create_test_app();
+        app.set_mode(Mode::Query);
+        app.set_query("base64".to_string());
+        app.set_cursor_position(6);
+
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.query(), "base64d");
+
+        for c in " fla".chars() {
+            app.handle_event(key(KeyCode::Char(c))).unwrap();
+        }
+        assert_eq!(app.query(), "base64d fla");
+
+        // Cycling again should be based on the new word ("fla"), not the
+        // stale "base64*" candidate list from before.
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.query(), "base64d flatten");
+    }
+
+    #[test]
+    fn test_tab_switches_tabs_when_no_completion() {
+        let mut app = App::with_files(vec![
+            ("# One".to_string(), "one.md".to_string()),
+            ("# Two".to_string(), "two.md".to_string()),
+        ]);
+        app.set_mode(Mode::Query);
+        app.set_query("".to_string());
+
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+
+        assert_eq!(app.active_doc_index(), 1);
+    }
+
+    fn create_app_for_search() -> App {
+        let mut app = App::new("# Alpha\n\nneedle here\n\n# Beta\n".to_string());
+        app.set_query(".".to_string());
+        app.exec_query();
+        app
+    }
+
+    #[test]
+    fn test_slash_enters_search_mode_from_normal() {
+        let mut app = create_app_for_search();
+        app.handle_event(key(KeyCode::Char('/'))).unwrap();
+        assert_eq!(app.mode(), Mode::Search);
+    }
+
+    #[test]
+    fn test_incremental_search_jumps_to_match() {
+        let mut app = create_app_for_search();
+        app.handle_event(key(KeyCode::Char('/'))).unwrap();
+
+        for c in "needle".chars() {
+            app.handle_event(key(KeyCode::Char(c))).unwrap();
+        }
+
+        assert_eq!(app.selected_idx(), 1);
+    }
+
+    #[test]
+    fn test_search_esc_restores_original_selection() {
+        let mut app = create_app_for_search();
+        assert_eq!(app.selected_idx(), 0);
+
+        app.handle_event(key(KeyCode::Char('/'))).unwrap();
+        for c in "Beta".chars() {
+            app.handle_event(key(KeyCode::Char(c))).unwrap();
+        }
+        assert_eq!(app.selected_idx(), 2);
+
+        app.handle_event(key(KeyCode::Esc)).unwrap();
+
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.selected_idx(), 0);
+    }
+
+    #[test]
+    fn test_search_enter_commits_and_repeat_with_n() {
+        let mut app = App::new("# Alpha\n\nneedle one\n\nneedle two\n".to_string());
+        app.set_query(".".to_string());
+        app.exec_query();
+
+        app.handle_event(key(KeyCode::Char('/'))).unwrap();
+        for c in "needle".chars() {
+            app.handle_event(key(KeyCode::Char(c))).unwrap();
+        }
+        app.handle_event(key(KeyCode::Enter)).unwrap();
+
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.selected_idx(), 1);
+
+        app.handle_event(key(KeyCode::Char('n'))).unwrap();
+        assert_eq!(app.selected_idx(), 2);
+
+        app.handle_event(key_press(KeyCode::Char('N'), KeyModifiers::SHIFT))
+            .unwrap();
+        assert_eq!(app.selected_idx(), 1);
+    }
+
+    #[test]
+    fn test_tree_view_search_jumps_selection() {
+        let mut app = App::new("# Alpha\n\n## Needle Heading\n\n# Beta\n".to_string());
+        app.handle_event(key(KeyCode::Char('t'))).unwrap();
+        assert_eq!(app.mode(), Mode::TreeView);
+
+        app.handle_event(key(KeyCode::Char('/'))).unwrap();
+        assert_eq!(app.mode(), Mode::Search);
+        assert_eq!(app.search_return_mode(), Mode::TreeView);
+
+        for c in "Needle".chars() {
+            app.handle_event(key(KeyCode::Char(c))).unwrap();
+        }
+        app.handle_event(key(KeyCode::Enter)).unwrap();
+
+        assert_eq!(app.mode(), Mode::TreeView);
+        let selected = app.tree_view().unwrap().get_selected_node().unwrap();
+        if let mq_markdown::Node::Heading(h) = selected {
+            let text: String = h.values.iter().map(|n| n.value()).collect();
+            assert!(text.contains("Needle Heading"));
+        } else {
+            panic!("expected the search to land on the heading node");
+        }
+    }
+
+    #[test]
+    fn test_favorites_navigation_and_enter_applies_query() {
+        let mut app = create_test_app();
+        app.set_saved_queries(vec![
+            SavedQuery {
+                name: "headings".to_string(),
+                query: ".h".to_string(),
+            },
+            SavedQuery {
+                name: "all".to_string(),
+                query: ".".to_string(),
+            },
+        ]);
+
+        app.handle_event(key(KeyCode::Char('F'))).unwrap();
+        assert_eq!(app.mode(), Mode::Favorites);
+        assert_eq!(app.favorites_selected(), 0);
+
+        app.handle_event(key(KeyCode::Char('j'))).unwrap();
+        assert_eq!(app.favorites_selected(), 1);
+
+        app.handle_event(key(KeyCode::Char('k'))).unwrap();
+        assert_eq!(app.favorites_selected(), 0);
+
+        app.handle_event(key(KeyCode::Enter)).unwrap();
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.query(), ".h");
+    }
+
+    #[test]
+    fn test_save_query_mode_name_input_and_cancel() {
+        let mut app = create_test_app();
+        app.set_query(".h".to_string());
+
+        app.handle_event(key(KeyCode::Char('S'))).unwrap();
+        assert_eq!(app.mode(), Mode::SaveQuery);
+
+        for c in "my query".chars() {
+            app.handle_event(key(KeyCode::Char(c))).unwrap();
+        }
+        assert_eq!(app.save_query_name(), "my query");
+
+        app.handle_event(key(KeyCode::Esc)).unwrap();
+        assert_eq!(app.mode(), Mode::Normal);
+        // Esc cancels without saving.
+        assert!(!app.saved_queries().iter().any(|q| q.name == "my query"));
     }
 }

@@ -8,11 +8,13 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+use std::collections::HashMap;
 
 /// Render raw Markdown `content` into a list of styled lines suitable for
 /// display in a scrollable `Paragraph`.
 pub fn render_preview(content: &str) -> Vec<Line<'static>> {
     let src_lines: Vec<&str> = content.lines().collect();
+    let defs = scan_link_definitions(&src_lines);
     let mut lines = Vec::with_capacity(src_lines.len());
     let mut in_code_block = false;
     let mut code_fence = String::new();
@@ -71,6 +73,18 @@ pub fn render_preview(content: &str) -> Vec<Line<'static>> {
             continue;
         }
 
+        // Invisible in real Markdown; dimmed here to keep line counts in sync.
+        if parse_definition_line(trimmed).is_some() {
+            lines.push(Line::from(Span::styled(
+                raw.to_string(),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            )));
+            i += 1;
+            continue;
+        }
+
         // Table header row, immediately followed by an alignment separator row.
         if raw.contains('|')
             && src_lines
@@ -82,6 +96,7 @@ pub fn render_preview(content: &str) -> Vec<Line<'static>> {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
+                &defs,
             )));
             i += 1;
             continue;
@@ -97,7 +112,7 @@ pub fn render_preview(content: &str) -> Vec<Line<'static>> {
         }
 
         if raw.contains('|') && raw.trim().starts_with('|') {
-            lines.push(Line::from(table_row_spans(raw, Style::default())));
+            lines.push(Line::from(table_row_spans(raw, Style::default(), &defs)));
             i += 1;
             continue;
         }
@@ -112,6 +127,7 @@ pub fn render_preview(content: &str) -> Vec<Line<'static>> {
                 Style::default()
                     .fg(Color::Gray)
                     .add_modifier(Modifier::ITALIC),
+                &defs,
             ));
             lines.push(Line::from(spans));
             i += 1;
@@ -127,7 +143,7 @@ pub fn render_preview(content: &str) -> Vec<Line<'static>> {
                     Style::default().fg(Color::Cyan),
                 ));
             }
-            spans.extend(parse_inline(rest, Style::default()));
+            spans.extend(parse_inline(rest, Style::default(), &defs));
             lines.push(Line::from(spans));
             i += 1;
             continue;
@@ -139,11 +155,33 @@ pub fn render_preview(content: &str) -> Vec<Line<'static>> {
             continue;
         }
 
-        lines.push(Line::from(parse_inline(raw, Style::default())));
+        lines.push(Line::from(parse_inline(raw, Style::default(), &defs)));
         i += 1;
     }
 
     lines
+}
+
+/// Parse a `[label]: url` reference definition line, if `trimmed` is one.
+fn parse_definition_line(trimmed: &str) -> Option<(String, String)> {
+    let rest = trimmed.strip_prefix('[')?;
+    let close = rest.find(']')?;
+    let label = rest[..close].trim().to_string();
+    let after = rest[close + 1..].strip_prefix(':')?.trim_start();
+    let url_end = after.find(char::is_whitespace).unwrap_or(after.len());
+    let url = &after[..url_end];
+    if label.is_empty() || url.is_empty() {
+        return None;
+    }
+    Some((label.to_lowercase(), url.to_string()))
+}
+
+/// All `[label]: url` definitions in the document, keyed by lowercased label.
+fn scan_link_definitions(src_lines: &[&str]) -> HashMap<String, String> {
+    src_lines
+        .iter()
+        .filter_map(|line| parse_definition_line(line.trim_start()))
+        .collect()
 }
 
 fn fence_marker(trimmed: &str) -> Option<String> {
@@ -209,14 +247,14 @@ fn is_table_separator(line: &str) -> bool {
     })
 }
 
-fn table_row_spans(raw: &str, cell_style: Style) -> Vec<Span<'static>> {
+fn table_row_spans(raw: &str, cell_style: Style, defs: &HashMap<String, String>) -> Vec<Span<'static>> {
     let cells: Vec<&str> = raw.trim().trim_matches('|').split('|').collect();
     let mut spans = Vec::new();
     for (idx, cell) in cells.iter().enumerate() {
         if idx > 0 {
             spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
         }
-        spans.extend(parse_inline(cell.trim(), cell_style));
+        spans.extend(parse_inline(cell.trim(), cell_style, defs));
     }
     spans
 }
@@ -271,7 +309,7 @@ fn checkbox(s: &str) -> (Option<bool>, &str) {
 /// Render a single line of inline Markdown (emphasis, code spans, links,
 /// images, strikethrough) into styled spans, falling back to plain text for
 /// anything it doesn't recognize.
-fn parse_inline(text: &str, base: Style) -> Vec<Span<'static>> {
+fn parse_inline(text: &str, base: Style, defs: &HashMap<String, String>) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
     let mut spans = Vec::new();
@@ -291,14 +329,42 @@ fn parse_inline(text: &str, base: Style) -> Vec<Span<'static>> {
         }
 
         if chars[i] == '['
-            && let Some((label, _url, consumed)) = parse_link_like(&chars, i)
+            && let Some((label, url, consumed)) = parse_link_like(&chars, i)
         {
             flush(&mut buf, &mut spans, base);
-            spans.push(Span::styled(
-                label,
-                base.fg(Color::Blue).add_modifier(Modifier::UNDERLINED),
-            ));
-            i += consumed;
+
+            if !url.is_empty() {
+                spans.push(Span::styled(
+                    label,
+                    base.fg(Color::Blue).add_modifier(Modifier::UNDERLINED),
+                ));
+                i += consumed;
+                continue;
+            }
+
+            // No inline `(url)`: try reference-style `[text][ref]` / shortcut `[text]`.
+            let mut end = i + consumed;
+            let mut ref_label = label.clone();
+            if end < len
+                && chars[end] == '['
+                && let Some((r, _, ref_consumed)) = parse_link_like(&chars, end)
+            {
+                end += ref_consumed;
+                if !r.is_empty() {
+                    ref_label = r;
+                }
+            }
+
+            if defs.contains_key(&ref_label.to_lowercase()) {
+                spans.push(Span::styled(
+                    label,
+                    base.fg(Color::Blue).add_modifier(Modifier::UNDERLINED),
+                ));
+                i = end;
+            } else {
+                spans.push(Span::styled(format!("[{label}]"), base));
+                i += consumed;
+            }
             continue;
         }
 
@@ -323,6 +389,7 @@ fn parse_inline(text: &str, base: Style) -> Vec<Span<'static>> {
             spans.extend(parse_inline(
                 &inner,
                 base.add_modifier(Modifier::CROSSED_OUT),
+                defs,
             ));
             i += consumed;
             continue;
@@ -335,7 +402,7 @@ fn parse_inline(text: &str, base: Style) -> Vec<Span<'static>> {
             && !inner.is_empty()
         {
             flush(&mut buf, &mut spans, base);
-            spans.extend(parse_inline(&inner, base.add_modifier(Modifier::BOLD)));
+            spans.extend(parse_inline(&inner, base.add_modifier(Modifier::BOLD), defs));
             i += consumed;
             continue;
         }
@@ -345,7 +412,7 @@ fn parse_inline(text: &str, base: Style) -> Vec<Span<'static>> {
             && !inner.is_empty()
         {
             flush(&mut buf, &mut spans, base);
-            spans.extend(parse_inline(&inner, base.add_modifier(Modifier::ITALIC)));
+            spans.extend(parse_inline(&inner, base.add_modifier(Modifier::ITALIC), defs));
             i += consumed;
             continue;
         }
@@ -531,5 +598,48 @@ mod tests {
         let lines = render_preview("a\n\nb");
         assert_eq!(lines.len(), 3);
         assert_eq!(line_text(&lines[1]), "");
+    }
+
+    #[test]
+    fn test_reference_style_link_resolves_to_definition() {
+        let lines = render_preview("See [mq][ref] for details.\n\n[ref]: https://example.com");
+        assert_eq!(line_text(&lines[0]), "See mq for details.");
+        let span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "mq")
+            .unwrap();
+        assert!(span.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn test_shortcut_reference_link_resolves_to_definition() {
+        let lines = render_preview("See [mq] for details.\n\n[mq]: https://example.com");
+        let span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "mq")
+            .unwrap();
+        assert!(span.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn test_undefined_bracket_renders_as_literal_text() {
+        let lines = render_preview("This is [not a link] in prose.");
+        assert_eq!(line_text(&lines[0]), "This is [not a link] in prose.");
+    }
+
+    #[test]
+    fn test_definition_line_rendered_dimmed_and_preserves_line_count() {
+        let lines = render_preview("a\n[ref]: https://example.com\nb");
+        assert_eq!(lines.len(), 3);
+        assert!(line_text(&lines[1]).contains("https://example.com"));
+    }
+
+    #[test]
+    fn test_preview_line_count_matches_source_line_count() {
+        let content = "# Title\n\nSome *text* with a [link](url).\n\n- item\n\n> quote\n";
+        let lines = render_preview(content);
+        assert_eq!(lines.len(), content.lines().count());
     }
 }

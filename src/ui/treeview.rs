@@ -271,6 +271,44 @@ impl TreeView {
         self.selected_index
     }
 
+    pub fn set_selected_index(&mut self, index: usize) {
+        if index < self.items.len() {
+            self.selected_index = index;
+        }
+    }
+
+    /// Nearest item whose display text contains `term` (case-insensitive) from `start`, wrapping.
+    pub fn find_match(&self, start: usize, forward: bool, term: &str) -> Option<usize> {
+        let len = self.items.len();
+        if len == 0 || term.is_empty() {
+            return None;
+        }
+        let term_lower = term.to_lowercase();
+        let start = start.min(len - 1);
+        let mut idx = start;
+
+        for step in 0..len {
+            if step > 0 {
+                idx = if forward {
+                    (idx + 1) % len
+                } else if idx == 0 {
+                    len - 1
+                } else {
+                    idx - 1
+                };
+            }
+            if self.items[idx]
+                .display_text
+                .to_lowercase()
+                .contains(&term_lower)
+            {
+                return Some(idx);
+            }
+        }
+
+        None
+    }
+
     pub fn items(&self) -> &[TreeItem] {
         &self.items
     }
@@ -280,6 +318,7 @@ impl TreeView {
     }
 
     pub fn render_with_title(&self, frame: &mut Frame, area: Rect, title: &str) {
+        let wrap_width = area.width.saturating_sub(2).max(1) as usize;
         let items: Vec<ListItem> = self
             .items
             .iter()
@@ -330,16 +369,17 @@ impl TreeView {
                 };
 
                 let full_content = format!("{}{}", indent, content);
-                let line = Line::from(vec![Span::styled(
-                    full_content,
-                    if i == self.selected_index {
-                        Style::default().fg(Color::Black).bg(Color::White)
-                    } else {
-                        Self::get_node_style(&tree_item.node)
-                    },
-                )]);
+                let style = if i == self.selected_index {
+                    Style::default().fg(Color::Black).bg(Color::White)
+                } else {
+                    Self::get_node_style(&tree_item.node)
+                };
+                let lines: Vec<Line> = crate::ui::wrap_to_width(&full_content, wrap_width)
+                    .into_iter()
+                    .map(|segment| Line::from(Span::styled(segment, style)))
+                    .collect();
 
-                ListItem::new(line)
+                ListItem::new(lines)
             })
             .collect();
 

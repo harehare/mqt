@@ -13,6 +13,32 @@ use ratatui::{
 };
 
 use crate::app::{App, Mode};
+use unicode_width::UnicodeWidthChar;
+
+/// Break `line` into chunks of at most `width` display columns, preserving
+/// all original characters/spacing exactly (no word-boundary reflow), so
+/// list rows stay fully visible instead of being clipped.
+pub(crate) fn wrap_to_width(line: &str, width: usize) -> Vec<String> {
+    if width == 0 || line.is_empty() {
+        return vec![line.to_string()];
+    }
+
+    let mut rows = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+
+    for ch in line.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if current_width + ch_width > width && !current.is_empty() {
+            rows.push(std::mem::take(&mut current));
+            current_width = 0;
+        }
+        current.push(ch);
+        current_width += ch_width;
+    }
+    rows.push(current);
+    rows
+}
 
 pub fn draw_ui(frame: &mut Frame, app: &App) {
     let show_tabs = app.document_count() > 1;
@@ -45,10 +71,19 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
     match app.mode() {
         Mode::Query => draw_query_input(frame, app, header_area),
         Mode::OpenFile => draw_open_file_input(frame, app, header_area),
+        Mode::Search => draw_search_input(frame, app, header_area),
+        Mode::SaveQuery => draw_save_query_input(frame, app, header_area),
         _ => draw_title_bar(frame, app, header_area),
     }
 
-    match app.mode() {
+    // While searching, keep showing the view the search started from.
+    let display_mode = if app.mode() == Mode::Search {
+        app.search_return_mode()
+    } else {
+        app.mode()
+    };
+
+    match display_mode {
         Mode::TreeView => {
             if let Some(tree_view) = app.tree_view() {
                 tree_view.render(frame, results_area);
@@ -56,6 +91,9 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
         }
         Mode::Preview => {
             draw_preview(frame, app, results_area);
+        }
+        Mode::Favorites => {
+            draw_favorites_list(frame, app, results_area);
         }
         _ => {
             // Show sidebar if enabled
@@ -110,8 +148,16 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
 
     draw_status_line(frame, app, status_area);
 
-    if let Some(error) = app.error_msg() {
+    // Query mode shows errors inline (in the query box) instead of a
+    // blocking popup, since they re-fire on every keystroke while typing.
+    if app.mode() != Mode::Query
+        && let Some(error) = app.error_msg()
+    {
         draw_error_popup(frame, error);
+    }
+
+    if app.mode() == Mode::Query {
+        draw_completions_popup(frame, app, header_area);
     }
 
     if app.mode() == Mode::Help {
@@ -165,11 +211,110 @@ fn draw_open_file_input(frame: &mut Frame, app: &App, area: Rect) {
     ));
 }
 
+fn draw_search_input(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .title("Search (Enter to confirm, Esc to cancel)")
+        .borders(Borders::ALL);
+
+    let text = Paragraph::new(app.search_query())
+        .style(Style::default().fg(Color::Yellow))
+        .block(block);
+
+    frame.render_widget(text, area);
+
+    let cursor_x = app.search_cursor() as u16 + 1;
+    frame.set_cursor_position(Position::new(area.x + cursor_x, area.y + 1));
+}
+
+fn draw_save_query_input(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .title(format!(
+            "Save query as (Enter to confirm, Esc to cancel) - {}",
+            app.query()
+        ))
+        .borders(Borders::ALL);
+
+    let text = Paragraph::new(app.save_query_name())
+        .style(Style::default().fg(Color::Yellow))
+        .block(block);
+
+    frame.render_widget(text, area);
+
+    let cursor_x = app.save_query_cursor() as u16 + 1;
+    frame.set_cursor_position(Position::new(area.x + cursor_x, area.y + 1));
+}
+
+fn draw_favorites_list(frame: &mut Frame, app: &App, area: Rect) {
+    let saved = app.saved_queries();
+    let block = Block::default()
+        .title("Favorites (Enter to run, d to delete, Esc to close)")
+        .borders(Borders::ALL);
+
+    if saved.is_empty() {
+        let text = Paragraph::new("No saved queries yet - press 'S' to save the current query")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(block);
+        frame.render_widget(text, area);
+        return;
+    }
+
+    let wrap_width = area.width.saturating_sub(2).max(1) as usize;
+
+    let items: Vec<ListItem> = saved
+        .iter()
+        .enumerate()
+        .map(|(i, saved)| {
+            let is_selected = i == app.favorites_selected();
+            let style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::White)
+            } else {
+                Style::default()
+            };
+            let name_style = style
+                .add_modifier(Modifier::BOLD)
+                .fg(if is_selected { Color::Black } else { Color::Cyan });
+            let query_style = style.fg(if is_selected { Color::Black } else { Color::Gray });
+
+            let text = format!("{}  {}", saved.name, saved.query);
+            let name_len = saved.name.chars().count();
+            let lines: Vec<Line> = wrap_to_width(&text, wrap_width)
+                .iter()
+                .enumerate()
+                .map(|(seg_i, segment)| {
+                    if seg_i == 0 {
+                        let chars: Vec<char> = segment.chars().collect();
+                        let split_at = name_len.min(chars.len());
+                        let name_part: String = chars[..split_at].iter().collect();
+                        let rest_part: String = chars[split_at..].iter().collect();
+                        Line::from(vec![
+                            Span::styled(name_part, name_style),
+                            Span::styled(rest_part, query_style),
+                        ])
+                    } else {
+                        Line::from(Span::styled(segment.clone(), query_style))
+                    }
+                })
+                .collect();
+
+            ListItem::new(lines).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(block);
+    let mut state = ListState::default();
+    state.select(Some(app.favorites_selected()));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
 fn draw_query_input(frame: &mut Frame, app: &App, area: Rect) {
-    let query_block = Block::default()
-        .title("Query")
-        .borders(Borders::ALL)
-        .style(Style::default());
+    let mut query_block = Block::default().title("Query").borders(Borders::ALL);
+
+    if let Some(error) = app.error_msg() {
+        query_block = query_block.title_bottom(
+            Line::from(Span::styled(error.to_string(), Style::default().fg(Color::Red)))
+                .alignment(Alignment::Left),
+        );
+    }
 
     let query_text = Paragraph::new(app.query())
         .style(Style::default().fg(Color::Yellow))
@@ -182,6 +327,55 @@ fn draw_query_input(frame: &mut Frame, app: &App, area: Rect) {
         area.x + cursor_x,
         area.y + 1, // +1 for block border
     ));
+}
+
+/// Completion suggestions popup under the query box; Tab accepts the first entry.
+fn draw_completions_popup(frame: &mut Frame, app: &App, header_area: Rect) {
+    let completions = app.active_completions();
+    if completions.is_empty() {
+        return;
+    }
+    let selected = app.completion_selected_index();
+
+    let frame_area = frame.area();
+    let height = (completions.len() as u16 + 2).min(10);
+    let y = header_area.y + header_area.height;
+    if y >= frame_area.height {
+        return;
+    }
+    let height = height.min(frame_area.height - y);
+    let area = Rect::new(header_area.x, y, header_area.width, height);
+
+    frame.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = completions
+        .iter()
+        .enumerate()
+        .map(|(i, (name, description))| {
+            let style = if i == selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!(" {name} "), style),
+                Span::styled(format!(" {description}"), Style::default().fg(Color::Gray)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Tab/Shift+Tab to cycle"),
+    );
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_results_list(frame: &mut Frame, app: &App, area: Rect) {
@@ -231,24 +425,28 @@ fn draw_results_list(frame: &mut Frame, app: &App, area: Rect) {
 
     let selected_end_line = selected_line + selected_content_lines;
 
+    let search_term = app.active_search_term().filter(|t| !t.is_empty());
+    let wrap_width = area.width.saturating_sub(2).max(1) as usize;
+
     let items: Vec<ListItem> = mq_markdown::Markdown::new(results.to_vec())
         .to_string()
         .lines()
         .enumerate()
         .map(|(i, value)| {
             let is_selected = i >= selected_line && i < selected_end_line;
-            let content = if is_markdown_header(value) {
-                Line::from(Span::styled(
-                    value.to_string(),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ))
+            let base_style = if is_markdown_header(value) {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Line::from(value.to_string())
+                Style::default()
             };
+            let lines: Vec<Line> = wrap_to_width(value, wrap_width)
+                .iter()
+                .map(|segment| Line::from(highlight_matches(segment, search_term, base_style)))
+                .collect();
 
-            ListItem::new(content).style(if is_selected {
+            ListItem::new(lines).style(if is_selected {
                 Style::default().fg(Color::Black).bg(Color::White)
             } else {
                 Style::default()
@@ -276,10 +474,38 @@ fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
     let max_scroll = total_lines.saturating_sub(inner_height as usize) as u16;
     let scroll = app.preview_scroll().min(max_scroll);
 
+    let hint = if app.preview_split() {
+        "s to unsplit"
+    } else {
+        "s to split with source"
+    };
     let title = format!(
-        "Preview - {} (↑/k ↓/j scroll, g/G top/bottom, p/Esc to exit)",
+        "Preview - {} (↑/k ↓/j scroll, g/G top/bottom, {hint}, p/Esc to exit)",
         app.filename().unwrap_or("untitled")
     );
+
+    let preview_area = if app.preview_split() {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+
+        let source_lines: Vec<Line> = app
+            .active_doc_content()
+            .lines()
+            .map(|l| Line::from(l.to_string()))
+            .collect();
+        let source_block = Block::default().title("Source").borders(Borders::ALL);
+        let source_paragraph = Paragraph::new(source_lines)
+            .block(source_block)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0));
+        frame.render_widget(source_paragraph, chunks[0]);
+
+        chunks[1]
+    } else {
+        area
+    };
 
     let block = Block::default().title(title).borders(Borders::ALL);
 
@@ -288,7 +514,42 @@ fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
 
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, preview_area);
+}
+
+/// Style every case-insensitive occurrence of `term` in `line` distinctly.
+fn highlight_matches(line: &str, term: Option<&str>, base_style: Style) -> Vec<Span<'static>> {
+    let Some(term) = term else {
+        return vec![Span::styled(line.to_string(), base_style)];
+    };
+    let line_lower = line.to_lowercase();
+    let term_lower = term.to_lowercase();
+    let mut spans = Vec::new();
+    let mut pos = 0;
+
+    while let Some(offset) = line_lower[pos..].find(&term_lower) {
+        let match_start = pos + offset;
+        let match_end = match_start + term.len();
+        if match_start > pos {
+            spans.push(Span::styled(line[pos..match_start].to_string(), base_style));
+        }
+        spans.push(Span::styled(
+            line[match_start..match_end].to_string(),
+            base_style
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+        pos = match_end;
+    }
+    if pos < line.len() {
+        spans.push(Span::styled(line[pos..].to_string(), base_style));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(line.to_string(), base_style));
+    }
+
+    spans
 }
 
 /// Check if a line is a markdown header (starts with #)
@@ -378,22 +639,13 @@ fn draw_detail_view(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_help_screen(frame: &mut Frame) {
     let area = frame.area();
 
-    let width = area.width.clamp(20, 60);
-    let height = area.height.clamp(15, 40);
-    let x = (area.width.saturating_sub(width)) / 2;
-    let y = (area.height.saturating_sub(height)) / 2;
-
-    let help_area = Rect::new(x, y, width, height);
-
-    frame.render_widget(Clear, help_area);
-
     let help_block = Block::default()
         .title("Keyboard Controls")
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
         .style(Style::default().bg(Color::Black));
 
-    let help_text = vec![
+    let left_column = vec![
         Line::from(vec![Span::styled(
             "Navigation",
             Style::default()
@@ -449,7 +701,61 @@ fn draw_help_screen(frame: &mut Frame) {
             Span::styled("↑/↓", Style::default().fg(Color::Yellow)),
             Span::raw(" - Navigate query history"),
         ]),
+        Line::from(vec![
+            Span::styled("Tab/Shift+Tab", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Cycle completion suggestions"),
+        ]),
         Line::from(""),
+        Line::from(vec![Span::styled(
+            "Search",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::UNDERLINED),
+        )]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("/", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Search within results or tree"),
+        ]),
+        Line::from(vec![
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Confirm search"),
+        ]),
+        Line::from(vec![
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Cancel search"),
+        ]),
+        Line::from(vec![
+            Span::styled("n/N", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Repeat search forward/backward"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Favorite Queries",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::UNDERLINED),
+        )]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("S", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Save current query"),
+        ]),
+        Line::from(vec![
+            Span::styled("F", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Browse saved queries"),
+        ]),
+        Line::from(vec![
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Run selected query"),
+        ]),
+        Line::from(vec![
+            Span::styled("d", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Delete selected query"),
+        ]),
+    ];
+
+    let right_column = vec![
         Line::from(vec![Span::styled(
             "Other Commands",
             Style::default()
@@ -562,17 +868,33 @@ fn draw_help_screen(frame: &mut Frame) {
             Span::raw(" - Jump to top/bottom"),
         ]),
         Line::from(vec![
+            Span::styled("s", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Toggle split with raw source"),
+        ]),
+        Line::from(vec![
             Span::styled("Esc/p", Style::default().fg(Color::Yellow)),
             Span::raw(" - Exit preview"),
         ]),
     ];
 
-    let help_paragraph = Paragraph::new(help_text)
-        .block(help_block)
-        .style(Style::default())
-        .alignment(Alignment::Left);
+    let content_lines = left_column.len().max(right_column.len());
+    let width = area.width.clamp(30, 90);
+    let height = (content_lines as u16 + 2).clamp(15, area.height);
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let help_area = Rect::new(x, y, width, height);
 
-    frame.render_widget(help_paragraph, help_area);
+    frame.render_widget(Clear, help_area);
+    let inner = help_block.inner(help_area);
+    frame.render_widget(help_block, help_area);
+
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner);
+
+    frame.render_widget(Paragraph::new(left_column).alignment(Alignment::Left), columns[0]);
+    frame.render_widget(Paragraph::new(right_column).alignment(Alignment::Left), columns[1]);
 }
 
 fn draw_error_popup(frame: &mut Frame, error: &str) {
@@ -767,6 +1089,61 @@ mod tests {
                 .join("")
                 .contains("Results")
         );
+    }
+
+    #[test]
+    fn test_wrap_to_width_splits_long_line() {
+        let rows = wrap_to_width("abcdefghij", 4);
+        assert_eq!(rows, vec!["abcd", "efgh", "ij"]);
+    }
+
+    #[test]
+    fn test_wrap_to_width_short_line_unchanged() {
+        let rows = wrap_to_width("short", 40);
+        assert_eq!(rows, vec!["short"]);
+    }
+
+    #[test]
+    fn test_wrap_to_width_preserves_whitespace() {
+        // A hard, position-preserving wrap must never collapse or drop
+        // interior spaces (this would corrupt code/table indentation).
+        let rows = wrap_to_width("a    b", 3);
+        assert_eq!(rows.concat(), "a    b");
+    }
+
+    #[test]
+    fn test_wrap_to_width_empty_line() {
+        assert_eq!(wrap_to_width("", 10), vec![""]);
+    }
+
+    #[test]
+    fn test_draw_results_list_wraps_long_lines_instead_of_clipping() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 24)).unwrap();
+        let mut app = App::new("".to_string());
+        app.set_results(vec![mq_markdown::Node::Text(mq_markdown::Text {
+            value: "This line is much longer than the twenty column width of the terminal"
+                .to_string(),
+            position: None,
+        })]);
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_results_list(frame, &app, area);
+            })
+            .unwrap();
+
+        let backend = terminal.backend();
+        let content = backend
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .join("");
+
+        // The tail of the line must still be visible somewhere (wrapped to
+        // a later row), not silently dropped because it didn't fit on one row.
+        assert!(content.contains("terminal"));
     }
 
     #[test]
