@@ -182,18 +182,109 @@ Once in the TUI, press `:` to enter query mode and try these queries:
 
 ## Key Bindings
 
-| Key         | Action                      |
-| ----------- | --------------------------- |
-| `:`         | Enter query mode            |
-| `t`         | Toggle tree view            |
-| `p`         | Toggle rendered preview     |
-| `d`         | Toggle detail view          |
-| `y` / `Y`   | Copy results / selected row |
-| `o`         | Open a file as a new tab    |
-| `?` / `F1`  | Show the full help screen   |
-| `q` / `Esc` | Quit the application        |
+Press `?` or `F1` at any time in the app for this same list, in context.
 
-Press `?` or `F1` at any time in the app for the complete, mode-specific list of keyboard shortcuts.
+### Normal Mode
+
+| Key                 | Action                                     |
+| ------------------- | ------------------------------------------ |
+| `q` / `Esc`         | Quit the application                       |
+| `:`                 | Enter query mode                           |
+| `?` / `F1`          | Show help screen                           |
+| `t`                 | Toggle tree view mode                      |
+| `p`                 | Toggle rendered preview mode               |
+| `s`                 | Toggle sidebar (headers)                   |
+| `d`                 | Toggle detail view for selected item       |
+| `y`                 | Copy results to clipboard                  |
+| `Y`                 | Copy selected row to clipboard             |
+| `/`                 | Incremental search within results          |
+| `n` / `N`           | Repeat last search forward/backward        |
+| `S`                 | Save current query as a favorite           |
+| `F`                 | Browse saved (favorite) queries            |
+| `Ctrl+L`            | Clear current query                        |
+| `o`                 | Open a file as a new tab                   |
+| `←` / `→`           | Switch tabs (when multiple files are open) |
+| `Tab` / `Shift+Tab` | Switch tabs (when multiple files are open) |
+
+### Navigation
+
+| Key        | Action               |
+| ---------- | -------------------- |
+| `↑` / `k`  | Move up              |
+| `↓` / `j`  | Move down            |
+| `PageUp`   | Page up (10 items)   |
+| `PageDown` | Page down (10 items) |
+| `Home`     | Jump to first item   |
+| `End`      | Jump to last item    |
+
+### Query Mode
+
+| Key                    | Action                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `Enter`                | Execute query and return to normal mode                                        |
+| `Esc`                  | Exit query mode without executing                                              |
+| `↑` / `↓`              | Navigate query history                                                         |
+| `←` / `→`              | Move cursor in query string                                                    |
+| `Home` / `End`         | Jump to start/end of query                                                     |
+| `Backspace` / `Delete` | Edit query text                                                                |
+| `Tab` / `Shift+Tab`    | Cycle forward/backward through completion suggestions (or switch tabs if none) |
+
+### Search Mode
+
+| Key                    | Action                                   |
+| ---------------------- | ---------------------------------------- |
+| `Enter`                | Confirm search, keep the new position    |
+| `Esc`                  | Cancel search, restore previous position |
+| `←` / `→`              | Move cursor in search string             |
+| `Home` / `End`         | Jump to start/end of search text         |
+| `Backspace` / `Delete` | Edit search text                         |
+
+### Favorites Mode
+
+| Key         | Action                    |
+| ----------- | ------------------------- |
+| `↑` / `k`   | Move up                   |
+| `↓` / `j`   | Move down                 |
+| `Enter`     | Run the selected query    |
+| `d`         | Delete the selected query |
+| `Esc` / `F` | Close the favorites list  |
+
+### Tree View Mode
+
+| Key               | Action                                     |
+| ----------------- | ------------------------------------------ |
+| `↑` / `k`         | Move up in tree                            |
+| `↓` / `j`         | Move down in tree                          |
+| `Enter` / `Space` | Expand/collapse node                       |
+| `/`               | Incremental search within the tree         |
+| `n` / `N`         | Repeat last search forward/backward        |
+| `←` / `→`         | Switch tabs (when multiple files are open) |
+| `Esc` / `t`       | Exit tree view                             |
+| `?` / `F1`        | Show help                                  |
+
+### Open File Mode
+
+| Key                    | Action                           |
+| ---------------------- | -------------------------------- |
+| `Enter`                | Open the typed path as a new tab |
+| `Esc`                  | Cancel                           |
+| `←` / `→`              | Move cursor in path string       |
+| `Home` / `End`         | Jump to start/end of path        |
+| `Backspace` / `Delete` | Edit path text                   |
+
+### Preview Mode
+
+| Key         | Action                                     |
+| ----------- | ------------------------------------------ |
+| `↑` / `k`   | Scroll up                                  |
+| `↓` / `j`   | Scroll down                                |
+| `PageUp`    | Scroll up (10 lines)                       |
+| `PageDown`  | Scroll down (10 lines)                     |
+| `g`         | Jump to top                                |
+| `G`         | Jump to bottom                             |
+| `s`         | Toggle split with raw source               |
+| `←` / `→`   | Switch tabs (when multiple files are open) |
+| `Esc` / `p` | Exit preview                               |
 
 ## Configuration
 
