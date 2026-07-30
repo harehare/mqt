@@ -9,6 +9,7 @@ use ratatui::{
     text::{Line, Span},
 };
 use std::collections::HashMap;
+use unicode_width::UnicodeWidthStr;
 
 /// Render raw Markdown `content` into a list of styled lines suitable for
 /// display in a scrollable `Paragraph`.
@@ -85,20 +86,41 @@ pub fn render_preview(content: &str) -> Vec<Line<'static>> {
             continue;
         }
 
-        // Table header row, immediately followed by an alignment separator row.
+        // Table header + separator: render the whole block so columns align.
         if raw.contains('|')
             && src_lines
                 .get(i + 1)
                 .is_some_and(|next| is_table_separator(next))
         {
-            lines.push(Line::from(table_row_spans(
-                raw,
+            let mut all_rows = vec![parse_table_cells(raw)];
+            let mut j = i + 2;
+            while j < src_lines.len() {
+                let candidate = src_lines[j];
+                if candidate.trim().is_empty()
+                    || !candidate.contains('|')
+                    || is_table_separator(candidate)
+                {
+                    break;
+                }
+                all_rows.push(parse_table_cells(candidate));
+                j += 1;
+            }
+
+            let widths = table_column_widths(&all_rows, &defs);
+            lines.push(render_table_row(
+                &all_rows[0],
+                &widths,
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
                 &defs,
-            )));
-            i += 1;
+            ));
+            lines.push(render_table_separator(&widths));
+            for row in &all_rows[1..] {
+                lines.push(render_table_row(row, &widths, Style::default(), &defs));
+            }
+
+            i = j;
             continue;
         }
 
@@ -118,15 +140,14 @@ pub fn render_preview(content: &str) -> Vec<Line<'static>> {
         }
 
         if let Some((level, rest)) = blockquote_prefix(raw) {
+            let color = blockquote_color(level);
             let mut spans = vec![Span::styled(
                 "┃ ".repeat(level.max(1)),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(color),
             )];
             spans.extend(parse_inline(
                 rest,
-                Style::default()
-                    .fg(Color::Gray)
-                    .add_modifier(Modifier::ITALIC),
+                Style::default().fg(color).add_modifier(Modifier::ITALIC),
                 &defs,
             ));
             lines.push(Line::from(spans));
@@ -259,6 +280,74 @@ fn table_row_spans(raw: &str, cell_style: Style, defs: &HashMap<String, String>)
     spans
 }
 
+fn parse_table_cells(raw: &str) -> Vec<String> {
+    raw.trim()
+        .trim_matches('|')
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect()
+}
+
+/// Display width after Markdown syntax is stripped (e.g. `**bold**` -> `bold`).
+fn rendered_cell_width(cell: &str, defs: &HashMap<String, String>) -> usize {
+    parse_inline(cell, Style::default(), defs)
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum()
+}
+
+/// Widest rendered cell per column, across every row of a table block.
+fn table_column_widths(rows: &[Vec<String>], defs: &HashMap<String, String>) -> Vec<usize> {
+    let col_count = rows.iter().map(|row| row.len()).max().unwrap_or(0);
+    let mut widths = vec![0usize; col_count];
+    for row in rows {
+        for (idx, cell) in row.iter().enumerate() {
+            widths[idx] = widths[idx].max(rendered_cell_width(cell, defs));
+        }
+    }
+    widths
+}
+
+fn render_table_row(
+    cells: &[String],
+    widths: &[usize],
+    cell_style: Style,
+    defs: &HashMap<String, String>,
+) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (idx, cell) in cells.iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+        }
+        let cell_spans = parse_inline(cell, cell_style, defs);
+        let rendered_width: usize = cell_spans
+            .iter()
+            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+            .sum();
+        spans.extend(cell_spans);
+        let target = widths.get(idx).copied().unwrap_or(0);
+        if rendered_width < target {
+            spans.push(Span::styled(
+                " ".repeat(target - rendered_width),
+                cell_style,
+            ));
+        }
+    }
+    Line::from(spans)
+}
+
+fn render_table_separator(widths: &[usize]) -> Line<'static> {
+    let sep_style = Style::default().fg(Color::DarkGray);
+    let mut spans = Vec::new();
+    for (idx, width) in widths.iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled("─┼─", sep_style));
+        }
+        spans.push(Span::styled("─".repeat((*width).max(1)), sep_style));
+    }
+    Line::from(spans)
+}
+
 fn blockquote_prefix(raw: &str) -> Option<(usize, &str)> {
     let mut rest = raw.trim_start();
     if !rest.starts_with('>') {
@@ -270,6 +359,15 @@ fn blockquote_prefix(raw: &str) -> Option<(usize, &str)> {
         rest = r.trim_start();
     }
     Some((level, rest))
+}
+
+/// Cycle blockquote color by nesting depth so quoted replies stand out.
+fn blockquote_color(level: usize) -> Color {
+    match level % 3 {
+        1 => Color::Gray,
+        2 => Color::Cyan,
+        _ => Color::Magenta,
+    }
 }
 
 fn list_item(raw: &str) -> Option<(usize, String, Option<bool>, &str)> {
@@ -577,6 +675,16 @@ mod tests {
         let lines = render_preview("| A | B |\n| - | - |\n| 1 | 2 |");
         assert_eq!(line_text(&lines[0]), "A │ B");
         assert_eq!(line_text(&lines[2]), "1 │ 2");
+    }
+
+    #[test]
+    fn test_table_columns_align_by_rendered_width() {
+        let lines =
+            render_preview("| Name | Note |\n| - | - |\n| **bold** | x |\n| a | much longer |");
+        // Row 1 is the separator (uses '┼', not '│'); compare the data rows.
+        let col_pos = |idx: usize| line_text(&lines[idx]).find('│').unwrap();
+        assert_eq!(col_pos(0), col_pos(2));
+        assert_eq!(col_pos(0), col_pos(3));
     }
 
     #[test]

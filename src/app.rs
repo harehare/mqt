@@ -1058,11 +1058,23 @@ impl App {
                 (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
                     self.preview_scroll = self.preview_scroll.saturating_sub(1);
                 }
-                (KeyCode::PageDown, _) => {
-                    self.preview_scroll = self.preview_scroll.saturating_add(10);
+                // Full page (less/vim-pager style: f/Space forward, b back)
+                (KeyCode::PageDown, _) | (KeyCode::Char('f'), _) | (KeyCode::Char(' '), _) => {
+                    let page = self.preview_page_lines();
+                    self.preview_scroll = self.preview_scroll.saturating_add(page);
                 }
-                (KeyCode::PageUp, _) => {
-                    self.preview_scroll = self.preview_scroll.saturating_sub(10);
+                (KeyCode::PageUp, _) | (KeyCode::Char('b'), _) => {
+                    let page = self.preview_page_lines();
+                    self.preview_scroll = self.preview_scroll.saturating_sub(page);
+                }
+                // Half page (less/vim-pager style: d down, u up)
+                (KeyCode::Char('d'), _) => {
+                    let half = (self.preview_page_lines() / 2).max(1);
+                    self.preview_scroll = self.preview_scroll.saturating_add(half);
+                }
+                (KeyCode::Char('u'), _) => {
+                    let half = (self.preview_page_lines() / 2).max(1);
+                    self.preview_scroll = self.preview_scroll.saturating_sub(half);
                 }
                 // Jump to top/bottom (vim-style)
                 (KeyCode::Char('g'), _) => {
@@ -1117,6 +1129,11 @@ impl App {
         let viewport = self.preview_viewport_height.get().saturating_sub(2).max(1) as usize;
         let max_scroll = total.saturating_sub(viewport) as u16;
         self.preview_scroll = self.preview_scroll.min(max_scroll);
+    }
+
+    /// Lines per page/half-page scroll, based on the last-drawn viewport height.
+    fn preview_page_lines(&self) -> u16 {
+        self.preview_viewport_height.get().saturating_sub(2).max(1)
     }
 
     /// Update results based on current sidebar selection
@@ -2900,6 +2917,38 @@ mod tests {
             state: crossterm::event::KeyEventState::NONE,
         }))
         .unwrap();
+        assert_eq!(app.preview_scroll(), 0);
+    }
+
+    #[test]
+    fn test_preview_mode_page_and_half_page_navigation() {
+        let content = (0..50)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = App::new(content);
+        app.set_mode(Mode::Preview);
+        app.set_preview_viewport_height(22); // inner height = 20
+
+        let press = |code: KeyCode| {
+            Event::Key(KeyEvent {
+                code,
+                modifiers: KeyModifiers::NONE,
+                kind: crossterm::event::KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            })
+        };
+
+        app.handle_event(press(KeyCode::Char('d'))).unwrap();
+        assert_eq!(app.preview_scroll(), 10);
+
+        app.handle_event(press(KeyCode::Char('u'))).unwrap();
+        assert_eq!(app.preview_scroll(), 0);
+
+        app.handle_event(press(KeyCode::Char('f'))).unwrap();
+        assert_eq!(app.preview_scroll(), 20);
+
+        app.handle_event(press(KeyCode::Char('b'))).unwrap();
         assert_eq!(app.preview_scroll(), 0);
     }
 

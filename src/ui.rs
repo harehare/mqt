@@ -3,12 +3,12 @@ pub mod treeview;
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Tabs,
-        Wrap,
+        Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph,
+        Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs, Wrap,
     },
 };
 
@@ -479,8 +479,13 @@ fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         "s to split with source"
     };
+    let percent = if max_scroll == 0 {
+        100
+    } else {
+        (scroll as u32 * 100 / max_scroll as u32).min(100)
+    };
     let title = format!(
-        "Preview - {} (↑/k ↓/j scroll, g/G top/bottom, {hint}, p/Esc to exit)",
+        "Preview - {} [{percent}%] (j/k scroll, u/d ½-page, b/f page, g/G top/bottom, {hint}, p/Esc to exit)",
         app.filename().unwrap_or("untitled")
     );
 
@@ -515,6 +520,20 @@ fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
         .scroll((scroll, 0));
 
     frame.render_widget(paragraph, preview_area);
+
+    if total_lines > inner_height as usize {
+        let mut scrollbar_state = ScrollbarState::new(total_lines).position(scroll as usize);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓")),
+            preview_area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 /// Style every case-insensitive occurrence of `term` in `line` distinctly.
@@ -875,6 +894,14 @@ fn draw_help_screen(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("Up/k Down/j", Style::default().fg(Color::Yellow)),
             Span::raw(" - Scroll preview"),
+        ]),
+        Line::from(vec![
+            Span::styled("u/d", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Scroll half-page up/down"),
+        ]),
+        Line::from(vec![
+            Span::styled("b/f/Space", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Scroll full page up/down"),
         ]),
         Line::from(vec![
             Span::styled("g/G", Style::default().fg(Color::Yellow)),
