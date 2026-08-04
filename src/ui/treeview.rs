@@ -511,6 +511,7 @@ mod tests {
             index: 0,
             level: 0,
             checked: None,
+            start: None,
             position: None,
         });
         assert!(TreeItem::has_children(&list_with_items));
@@ -604,6 +605,7 @@ mod tests {
             index: 0,
             level: 0,
             checked: None,
+            start: None,
             position: None,
         });
         assert!(!TreeItem::has_children(&empty_list));
@@ -679,6 +681,7 @@ mod tests {
             index: 0,
             level: 0,
             checked: None,
+            start: None,
             position: None,
         });
         assert_eq!(
@@ -693,6 +696,7 @@ mod tests {
             index: 0,
             level: 0,
             checked: None,
+            start: None,
             position: None,
         });
         assert_eq!(
@@ -963,6 +967,7 @@ mod tests {
             index: 0,
             level: 0,
             checked: None,
+            start: None,
             position: None,
         });
         let list_item = TreeItem::new(list_node, 0, 0);
@@ -1128,6 +1133,7 @@ mod tests {
                 index: 0,
                 level: 0,
                 checked: None,
+                start: None,
                 position: None,
             }),
         ];
