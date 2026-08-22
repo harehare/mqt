@@ -234,6 +234,9 @@ pub struct App {
     /// Selected index (in the active document's results, or the tree view)
     /// recorded when entering Mode::Search, so Esc can restore it
     search_origin_idx: usize,
+    /// Active tab recorded when entering Mode::Search from Normal mode, so
+    /// Esc can restore it after a cross-tab search jump
+    search_origin_doc: usize,
     /// Last committed search term, used by `n` / `N` to repeat the search
     last_search: Option<String>,
     /// Name being typed for the query currently being saved (Mode::SaveQuery)
@@ -315,6 +318,7 @@ impl App {
             search_cursor: 0,
             search_return_mode: Mode::Normal,
             search_origin_idx: 0,
+            search_origin_doc: 0,
             last_search: None,
             save_query_name: String::new(),
             save_query_cursor: 0,
@@ -526,6 +530,7 @@ impl App {
                 (KeyCode::Char('/'), _) => {
                     self.search_return_mode = Mode::Normal;
                     self.search_origin_idx = self.active_doc().selected_idx;
+                    self.search_origin_doc = self.active_doc;
                     self.search_query.clear();
                     self.search_cursor = 0;
                     self.mode = Mode::Search;
@@ -1634,10 +1639,14 @@ impl App {
                 }
             }
             _ => {
-                let results = &self.active_doc().results;
-                if let Some(idx) =
-                    Self::find_match_idx(results, self.search_origin_idx, true, &self.search_query)
-                {
+                if let Some((doc_idx, idx)) = Self::find_match_across_tabs(
+                    &self.documents,
+                    self.search_origin_doc,
+                    self.search_origin_idx,
+                    true,
+                    &self.search_query,
+                ) {
+                    self.active_doc = doc_idx;
                     self.active_doc_mut().selected_idx = idx;
                 }
             }
@@ -1653,6 +1662,7 @@ impl App {
                 }
             }
             _ => {
+                self.active_doc = self.search_origin_doc;
                 self.active_doc_mut().selected_idx = self.search_origin_idx;
             }
         }
@@ -1689,9 +1699,15 @@ impl App {
             }
             _ => {
                 let results = &self.active_doc().results;
-                if let Some(start) = step(self.active_doc().selected_idx, results.len(), forward)
-                    && let Some(idx) = Self::find_match_idx(results, start, forward, &term)
-                {
+                let start = step(self.active_doc().selected_idx, results.len(), forward).unwrap_or(0);
+                if let Some((doc_idx, idx)) = Self::find_match_across_tabs(
+                    &self.documents,
+                    self.active_doc,
+                    start,
+                    forward,
+                    &term,
+                ) {
+                    self.active_doc = doc_idx;
                     self.active_doc_mut().selected_idx = idx;
                 }
             }
@@ -1728,6 +1744,43 @@ impl App {
                 .to_lowercase();
             if rendered.contains(&term_lower) {
                 return Some(idx);
+            }
+        }
+
+        None
+    }
+
+    /// Like `find_match_idx`, but when `documents[start_doc]` has no match it
+    /// continues into the following tabs (wrapping back to `start_doc`),
+    /// returning the tab index alongside the match index.
+    fn find_match_across_tabs(
+        documents: &[Document],
+        start_doc: usize,
+        start_idx: usize,
+        forward: bool,
+        term: &str,
+    ) -> Option<(usize, usize)> {
+        let doc_count = documents.len();
+        if doc_count == 0 || term.is_empty() {
+            return None;
+        }
+
+        if let Some(idx) =
+            Self::find_match_idx(&documents[start_doc].results, start_idx, forward, term)
+        {
+            return Some((start_doc, idx));
+        }
+
+        for step in 1..doc_count {
+            let doc_idx = if forward {
+                (start_doc + step) % doc_count
+            } else {
+                (start_doc + doc_count - step) % doc_count
+            };
+            let results = &documents[doc_idx].results;
+            let start = if forward { 0 } else { results.len().saturating_sub(1) };
+            if let Some(idx) = Self::find_match_idx(results, start, forward, term) {
+                return Some((doc_idx, idx));
             }
         }
 
@@ -3220,6 +3273,73 @@ mod tests {
 
         app.handle_event(key_press(KeyCode::Char('N'), KeyModifiers::SHIFT))
             .unwrap();
+        assert_eq!(app.selected_idx(), 1);
+    }
+
+    #[test]
+    fn test_incremental_search_jumps_to_match_in_other_tab() {
+        let mut app = App::with_files(vec![
+            ("# Alpha\n\nnothing here\n".to_string(), "a.md".to_string()),
+            ("# Beta\n\nneedle here\n".to_string(), "b.md".to_string()),
+        ]);
+        app.set_query(".".to_string());
+        app.exec_query();
+        assert_eq!(app.active_doc_index(), 0);
+
+        app.handle_event(key(KeyCode::Char('/'))).unwrap();
+        for c in "needle".chars() {
+            app.handle_event(key(KeyCode::Char(c))).unwrap();
+        }
+
+        assert_eq!(app.active_doc_index(), 1);
+        assert_eq!(app.selected_idx(), 1);
+    }
+
+    #[test]
+    fn test_search_esc_restores_original_tab() {
+        let mut app = App::with_files(vec![
+            ("# Alpha\n\nnothing here\n".to_string(), "a.md".to_string()),
+            ("# Beta\n\nneedle here\n".to_string(), "b.md".to_string()),
+        ]);
+        app.set_query(".".to_string());
+        app.exec_query();
+
+        app.handle_event(key(KeyCode::Char('/'))).unwrap();
+        for c in "needle".chars() {
+            app.handle_event(key(KeyCode::Char(c))).unwrap();
+        }
+        assert_eq!(app.active_doc_index(), 1);
+
+        app.handle_event(key(KeyCode::Esc)).unwrap();
+
+        assert_eq!(app.active_doc_index(), 0);
+        assert_eq!(app.selected_idx(), 0);
+    }
+
+    #[test]
+    fn test_repeat_search_falls_back_to_other_tab_with_no_local_match() {
+        let mut app = App::with_files(vec![
+            ("# Alpha\n\nneedle one\n".to_string(), "a.md".to_string()),
+            ("# Beta\n\nno match here\n".to_string(), "b.md".to_string()),
+        ]);
+        app.set_query(".".to_string());
+        app.exec_query();
+
+        app.handle_event(key(KeyCode::Char('/'))).unwrap();
+        for c in "needle".chars() {
+            app.handle_event(key(KeyCode::Char(c))).unwrap();
+        }
+        app.handle_event(key(KeyCode::Enter)).unwrap();
+        assert_eq!(app.active_doc_index(), 0);
+        assert_eq!(app.selected_idx(), 1);
+
+        // Manually switch to the tab with no match, then repeat-search.
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.active_doc_index(), 1);
+
+        app.handle_event(key(KeyCode::Char('n'))).unwrap();
+
+        assert_eq!(app.active_doc_index(), 0);
         assert_eq!(app.selected_idx(), 1);
     }
 
