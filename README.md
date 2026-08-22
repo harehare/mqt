@@ -1,10 +1,11 @@
-<h1 align="center">mq-tui</h1>
+<div align="center">
+  <img src="assets/logo.svg" style="width: 128px; height: 128px;"/>
+
+<h1>mq-tui</h1>
 
 [![ci](https://github.com/harehare/mq-tui/actions/workflows/ci.yml/badge.svg)](https://github.com/harehare/mq-tui/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/mq-tui?logo=rust)](https://crates.io/crates/mq-tui)
 [![license](https://img.shields.io/crates/l/mq-tui)](LICENSE)
-
-<div align="center">
 
 Interactive terminal interface for querying and manipulating Markdown content
 
@@ -95,17 +96,11 @@ Open several Markdown files at once; each one becomes a tab:
 mq-tui README.md CHANGELOG.md docs/*.md
 ```
 
-A tab bar appears at the top whenever more than one file is open. Switch
-tabs with `←` / `→` or `Tab` / `Shift+Tab`. The query box is shared across
-all tabs: whatever query you run is applied to every open file at once, so
-switching tabs shows that file's own filtered results without retyping the
-query. Press `o` at any time to open another file as a new tab.
+A tab bar appears at the top whenever more than one file is open. Switch tabs with `←` / `→` or `Tab` / `Shift+Tab`. The query box is shared across all tabs: whatever query you run is applied to every open file at once, so switching tabs shows that file's own filtered results without retyping the query. Press `o` at any time to open another file as a new tab.
 
 ### Tree View
 
-Press `t` to display the Markdown document structure as an expandable tree,
-showing the hierarchy of headings, lists, and other elements, color-coded by
-type:
+Press `t` to display the Markdown document structure as an expandable tree, showing the hierarchy of headings, lists, and other elements, color-coded by type:
 
 - 🔵 **Blue**: Headings
 - 🟢 **Green**: Lists
@@ -116,29 +111,19 @@ type:
 
 ### Rendered Preview
 
-Press `p` to switch to a rendered preview of the active document - headings,
-bold/italic text, lists, blockquotes, code blocks, tables, and links are
-styled to look close to their final rendered form instead of raw Markdown
-syntax. Use `↑`/`k`, `↓`/`j`, `PageUp`/`PageDown`, or `g`/`G` to scroll, and
-press `p` or `Esc` to return to normal mode. Press `s` while in preview mode
-to split the view and show the raw Markdown source side-by-side with the
-rendered output, scrolling in sync.
+Press `p` to switch to a rendered preview of the active document - headings, bold/italic text, lists, blockquotes, code blocks, tables, and links are styled to look close to their final rendered form instead of raw Markdown syntax. Use `↑`/`k`, `↓`/`j`, `PageUp`/`PageDown`, or `g`/`G` to scroll, and press `p` or `Esc` to return to normal mode. Press `s` while in preview mode to split the view and show the raw Markdown source side-by-side with the rendered output, scrolling in sync.
 
 ### Detail View
 
-Press `d` to toggle between list view and split view. In split view, the
-left pane shows the result list while the right pane displays detailed
-information about the selected item.
+Press `d` to toggle between list view and split view. In split view, the left pane shows the result list while the right pane displays detailed information about the selected item.
 
 ### Query History
 
-Every executed query is saved in history. Use `↑` and `↓` in query mode to
-navigate through previous queries.
+Every executed query is saved in history. Use `↑` and `↓` in query mode to navigate through previous queries.
 
 ### Clipboard Integration
 
-Press `y` to copy the current query results, or `Y` to copy just the
-selected row, to your system clipboard in Markdown format.
+Press `y` to copy the current query results, or `Y` to copy just the selected row, to your system clipboard in Markdown format.
 
 ### Watch Mode
 
@@ -148,13 +133,7 @@ Pass `--watch` (or `-w`) to automatically reload files when they change on disk:
 mq-tui --watch README.md
 ```
 
-The status line shows a `👀 watching` indicator while watch mode is active.
-Each open file is watched using your OS's native file system notifications
-(inotify on Linux, FSEvents on macOS, ReadDirectoryChangesW on Windows) -
-no polling involved, so changes are picked up almost instantly. When a file
-is modified externally (e.g. saved from your editor, including atomic
-save-and-rename), its content is reloaded and the current query is re-run
-automatically. Watch mode is not available when reading from stdin.
+The status line shows a `👀 watching` indicator while watch mode is active. Each open file is watched using your OS's native file system notifications (inotify on Linux, FSEvents on macOS, ReadDirectoryChangesW on Windows) - no polling involved, so changes are picked up almost instantly. When a file is modified externally (e.g. saved from your editor, including atomic save-and-rename), its content is reloaded and the current query is re-run automatically. Watch mode is not available when reading from stdin.
 
 ### Query Examples
 
