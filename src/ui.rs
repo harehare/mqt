@@ -306,7 +306,116 @@ fn draw_favorites_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+const QUERY_KEYWORDS: &[&str] = &[
+    "and", "as", "break", "catch", "continue", "def", "do", "elif", "else", "end", "fn",
+    "foreach", "if", "import", "include", "let", "loop", "match", "module", "nodes", "none",
+    "not", "or", "self", "true", "false", "try", "unless", "until", "var", "while",
+];
+
+/// Best-effort tokenizer for coloring the query bar as the user types.
+/// Not a real lexer (mq-lang's isn't public) — just close enough for display.
+fn highlight_query(query: &str) -> Vec<Span<'static>> {
+    let chars: Vec<char> = query.chars().collect();
+    let mut spans = Vec::new();
+    let mut i = 0;
+
+    let selector_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let keyword_style = Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD);
+    let string_style = Style::default().fg(Color::Green);
+    let number_style = Style::default().fg(Color::LightMagenta);
+    let function_style = Style::default().fg(Color::LightBlue);
+    let pipe_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let comment_style = Style::default().fg(Color::DarkGray);
+    let default_style = Style::default().fg(Color::Yellow);
+
+    while i < chars.len() {
+        let c = chars[i];
+
+        if c == '#' {
+            spans.push(Span::styled(chars[i..].iter().collect::<String>(), comment_style));
+            break;
+        }
+
+        if c == '"' {
+            let start = i;
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    i += 2;
+                    continue;
+                }
+                let closing = chars[i] == '"';
+                i += 1;
+                if closing {
+                    break;
+                }
+            }
+            spans.push(Span::styled(chars[start..i].iter().collect::<String>(), string_style));
+            continue;
+        }
+
+        if c.is_ascii_digit() {
+            let start = i;
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                i += 1;
+            }
+            spans.push(Span::styled(chars[start..i].iter().collect::<String>(), number_style));
+            continue;
+        }
+
+        if c == '.' {
+            let start = i;
+            i += 1;
+            while i < chars.len()
+                && (chars[i].is_alphanumeric() || matches!(chars[i], '_' | '*' | '>' | '^' | '<'))
+            {
+                i += 1;
+            }
+            spans.push(Span::styled(chars[start..i].iter().collect::<String>(), selector_style));
+            continue;
+        }
+
+        if c.is_alphabetic() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            let style = if QUERY_KEYWORDS.contains(&word.to_lowercase().as_str()) {
+                keyword_style
+            } else if chars.get(i) == Some(&'(') {
+                function_style
+            } else {
+                default_style
+            };
+            spans.push(Span::styled(word, style));
+            continue;
+        }
+
+        if c == '|' {
+            spans.push(Span::styled("|".to_string(), pipe_style));
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        i += 1;
+        while i < chars.len()
+            && !matches!(chars[i], '#' | '"' | '.' | '|')
+            && !chars[i].is_ascii_digit()
+            && !chars[i].is_alphabetic()
+            && chars[i] != '_'
+        {
+            i += 1;
+        }
+        spans.push(Span::styled(chars[start..i].iter().collect::<String>(), default_style));
+    }
+
+    spans
+}
+
 fn draw_query_input(frame: &mut Frame, app: &App, area: Rect) {
+    let has_error = app.error_msg().is_some();
     let mut query_block = Block::default().title("Query").borders(Borders::ALL);
 
     if let Some(error) = app.error_msg() {
@@ -316,9 +425,17 @@ fn draw_query_input(frame: &mut Frame, app: &App, area: Rect) {
         );
     }
 
-    let query_text = Paragraph::new(app.query())
-        .style(Style::default().fg(Color::Yellow))
-        .block(query_block);
+    // A broken query turns fully red/underlined; otherwise it's syntax-highlighted.
+    let spans = if has_error {
+        vec![Span::styled(
+            app.query().to_string(),
+            Style::default().fg(Color::Red).add_modifier(Modifier::UNDERLINED),
+        )]
+    } else {
+        highlight_query(app.query())
+    };
+
+    let query_text = Paragraph::new(Line::from(spans)).block(query_block);
 
     frame.render_widget(query_text, area);
 
@@ -985,6 +1102,31 @@ mod tests {
         let mut app = App::new("".to_string());
         app.set_query("test query".to_string());
         app
+    }
+
+    #[test]
+    fn test_highlight_query_classifies_tokens() {
+        let spans = highlight_query(r#".h | select(.depth == 1) # note"#);
+        let plain: Vec<String> = spans.iter().map(|s| s.content.to_string()).collect();
+
+        assert!(plain.contains(&".h".to_string()));
+        assert!(plain.contains(&"select".to_string()));
+        assert!(plain.contains(&".depth".to_string()));
+        assert!(plain.contains(&"|".to_string()));
+        assert!(plain.contains(&"1".to_string()));
+        assert!(plain.iter().any(|s| s.starts_with('#')));
+
+        let selector_span = spans.iter().find(|s| s.content == ".h").unwrap();
+        assert_eq!(selector_span.style.fg, Some(Color::Cyan));
+
+        let function_span = spans.iter().find(|s| s.content == "select").unwrap();
+        assert_eq!(function_span.style.fg, Some(Color::LightBlue));
+    }
+
+    #[test]
+    fn test_highlight_query_string_literal_is_single_span() {
+        let spans = highlight_query(r#"select(.text == "hello world")"#);
+        assert!(spans.iter().any(|s| s.content == "\"hello world\""));
     }
 
     fn create_app_with_results() -> App {
