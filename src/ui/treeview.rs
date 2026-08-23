@@ -313,6 +313,43 @@ impl TreeView {
         &self.items
     }
 
+    /// Labels for the selected node and its ancestors, root first, found by
+    /// scanning backward for the nearest preceding item at each shallower depth.
+    pub fn breadcrumb(&self) -> Vec<String> {
+        let Some(selected) = self.items.get(self.selected_index) else {
+            return Vec::new();
+        };
+        if selected.is_all_documents {
+            return vec![selected.display_text.clone()];
+        }
+
+        let mut labels = vec![Self::breadcrumb_label(selected)];
+        let mut want_depth = selected.depth;
+
+        for item in self.items[..self.selected_index].iter().rev() {
+            if want_depth == 0 {
+                break;
+            }
+            if item.depth == want_depth - 1 {
+                labels.push(Self::breadcrumb_label(item));
+                want_depth = item.depth;
+            }
+        }
+
+        labels.reverse();
+        labels
+    }
+
+    fn breadcrumb_label(item: &TreeItem) -> String {
+        const MAX_LEN: usize = 28;
+        let text = &item.display_text;
+        if text.chars().count() > MAX_LEN {
+            format!("{}\u{2026}", text.chars().take(MAX_LEN).collect::<String>())
+        } else {
+            text.clone()
+        }
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         self.render_with_title(frame, area, "Document Tree");
     }
@@ -1203,5 +1240,28 @@ mod tests {
 
         // This test mainly verifies that rendering doesn't panic and produces output
         assert!(has_content, "Should have rendered content");
+    }
+
+    #[test]
+    fn test_breadcrumb_root_is_single_label() {
+        let nodes = vec![create_test_heading(), create_test_text()];
+        let tree_view = TreeView::new(nodes);
+        assert_eq!(tree_view.breadcrumb(), vec!["# Test Heading".to_string()]);
+    }
+
+    #[test]
+    fn test_breadcrumb_includes_ancestors() {
+        let nodes = vec![create_test_heading()];
+        let mut tree_view = TreeView::new(nodes);
+        tree_view.toggle_expand();
+        tree_view.move_down();
+
+        assert_eq!(
+            tree_view.breadcrumb(),
+            vec![
+                "# Test Heading".to_string(),
+                "Text: Test Heading".to_string()
+            ]
+        );
     }
 }

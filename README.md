@@ -31,6 +31,10 @@ Interactive terminal interface for querying and manipulating Markdown content
 - 📖 **Detail View** - Inspect individual elements in depth
 - 🔄 **Query History** - Navigate through previous queries
 - 🎯 **fx-inspired UX** - Familiar interface for JSON query tool users
+- 🕹️ **Command Palette** - Fuzzy-searchable list of app actions (`Ctrl+K`)
+- 🌗 **Themes** - Dark (default) and light color themes for different terminal backgrounds
+- 💡 **Key-Hint Bar** - Persistent, mode-specific key hints folded into the status line (toggleable)
+- ✨ **Inline Completion** - Ghost-text suggestion for the top query completion as you type
 
 ## Installation
 
@@ -109,6 +113,8 @@ Press `t` to display the Markdown document structure as an expandable tree, show
 - 🟡 **Yellow**: Images
 - 🔵 **Cyan**: Code blocks
 
+The tree's title bar shows a breadcrumb trail (e.g. `# Intro › List › Text: ...`) for the selected node's ancestors, so it's easy to tell where you are in a deeply nested document.
+
 ### Rendered Preview
 
 Press `p` to switch to a rendered preview of the active document - headings, bold/italic text, lists, blockquotes, code blocks, tables, and links are styled to look close to their final rendered form instead of raw Markdown syntax. Use `↑`/`k`, `↓`/`j`, `PageUp`/`PageDown`, or `g`/`G` to scroll, and press `p` or `Esc` to return to normal mode. Press `s` while in preview mode to split the view and show the raw Markdown source side-by-side with the rendered output, scrolling in sync.
@@ -181,9 +187,11 @@ Press `?` or `F1` at any time in the app for this same list, in context.
 | `S`                 | Save current query as a favorite           |
 | `F`                 | Browse saved (favorite) queries            |
 | `Ctrl+L`            | Clear current query                        |
+| `Ctrl+K`            | Open command palette                       |
 | `o`                 | Open a file as a new tab                   |
 | `←` / `→`           | Switch tabs (when multiple files are open) |
 | `Tab` / `Shift+Tab` | Switch tabs (when multiple files are open) |
+| `<` / `>`           | Resize the sidebar (when `s` is on), otherwise the detail split (when `d` is on) |
 
 ### Navigation
 
@@ -262,12 +270,27 @@ Press `?` or `F1` at any time in the app for this same list, in context.
 | `g`         | Jump to top                                |
 | `G`         | Jump to bottom                             |
 | `s`         | Toggle split with raw source               |
+| `<` / `>`   | Resize the source/preview split (when `s` is on) |
 | `←` / `→`   | Switch tabs (when multiple files are open) |
 | `Esc` / `p` | Exit preview                               |
 
+### Command Palette
+
+Press `Ctrl+K` from Normal mode to open a searchable list of app actions - handy when you don't remember a key binding. Type to filter, `↑`/`↓` (or `Ctrl+P`/`Ctrl+N`) to move the selection, `Enter` to run it, `Esc` to close.
+
 ## Configuration
 
-`mq-tui` works out of the box with sensible defaults. The UI adapts to your terminal's color scheme and size.
+`mq-tui` works out of the box with sensible defaults. Settings are read from `<config dir>/mq-tui/config.toml` (`~/.config/mq-tui/config.toml` on Linux/macOS, honoring `XDG_CONFIG_HOME`; `%APPDATA%\mq-tui\config.toml` on Windows):
+
+```toml
+# Show mode-specific key hints on the left side of the status line (default: true)
+show_hint_bar = true
+
+# Color theme: "dark" (default) or "light"
+theme = "dark"
+```
+
+Both settings can also be overridden for a single run with `--no-hints` and `--theme <dark|light>`, without touching the file.
 
 ## Related Projects
 

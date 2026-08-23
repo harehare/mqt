@@ -1,6 +1,6 @@
 use clap::Parser;
 use miette::{IntoDiagnostic, miette};
-use mq_tui::App;
+use mq_tui::{App, ThemeName};
 use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
@@ -29,6 +29,14 @@ struct Cli {
     /// Watch opened files and reload automatically when they change on disk
     #[arg(short, long)]
     watch: bool,
+
+    /// Color theme (overrides config.toml for this run)
+    #[arg(long, value_name = "THEME")]
+    theme: Option<ThemeName>,
+
+    /// Hide the persistent key-hint bar (overrides config.toml for this run)
+    #[arg(long)]
+    no_hints: bool,
 }
 
 fn main() -> miette::Result<()> {
@@ -61,6 +69,12 @@ fn main() -> miette::Result<()> {
 
     if cli.watch {
         app.set_watch(true);
+    }
+    if let Some(theme) = cli.theme {
+        app.set_theme_name(theme);
+    }
+    if cli.no_hints {
+        app.set_show_hint_bar(false);
     }
 
     app.run()?;
