@@ -13,7 +13,9 @@ use std::{
 };
 
 use crate::{
+    config::{Config, ThemeName},
     event::{EventHandler, EventHandlerExt},
+    theme::Theme,
     ui::{draw_ui, preview, treeview::TreeView},
     util,
     watcher::{self, FileWatcher},
@@ -33,6 +35,8 @@ pub enum Mode {
     SaveQuery,
     /// Browsing/running/deleting saved (favorite) queries.
     Favorites,
+    /// Fuzzy-searchable list of app actions (opened with Ctrl+K).
+    CommandPalette,
 }
 
 impl Display for Mode {
@@ -47,8 +51,109 @@ impl Display for Mode {
             Mode::Search => write!(f, "SEARCH"),
             Mode::SaveQuery => write!(f, "SAVE QUERY"),
             Mode::Favorites => write!(f, "FAVORITES"),
+            Mode::CommandPalette => write!(f, "COMMAND PALETTE"),
         }
     }
+}
+
+/// A command palette entry, backed by the keypress that already implements it in Normal mode.
+pub struct PaletteAction {
+    pub label: &'static str,
+    pub description: &'static str,
+    key: KeyCode,
+    modifiers: KeyModifiers,
+}
+
+const PALETTE_ACTIONS: &[PaletteAction] = &[
+    PaletteAction {
+        label: "Query",
+        description: "Enter query mode",
+        key: KeyCode::Char(':'),
+        modifiers: KeyModifiers::NONE,
+    },
+    PaletteAction {
+        label: "Tree view",
+        description: "Toggle tree view mode",
+        key: KeyCode::Char('t'),
+        modifiers: KeyModifiers::NONE,
+    },
+    PaletteAction {
+        label: "Preview",
+        description: "Toggle rendered preview mode",
+        key: KeyCode::Char('p'),
+        modifiers: KeyModifiers::NONE,
+    },
+    PaletteAction {
+        label: "Sidebar",
+        description: "Toggle sidebar (headers)",
+        key: KeyCode::Char('s'),
+        modifiers: KeyModifiers::NONE,
+    },
+    PaletteAction {
+        label: "Detail view",
+        description: "Toggle detail view for the selected item",
+        key: KeyCode::Char('d'),
+        modifiers: KeyModifiers::NONE,
+    },
+    PaletteAction {
+        label: "Copy results",
+        description: "Copy all results to the clipboard",
+        key: KeyCode::Char('y'),
+        modifiers: KeyModifiers::NONE,
+    },
+    PaletteAction {
+        label: "Copy selected row",
+        description: "Copy the selected row to the clipboard",
+        key: KeyCode::Char('Y'),
+        modifiers: KeyModifiers::NONE,
+    },
+    PaletteAction {
+        label: "Search",
+        description: "Incremental search within results",
+        key: KeyCode::Char('/'),
+        modifiers: KeyModifiers::NONE,
+    },
+    PaletteAction {
+        label: "Save query",
+        description: "Save the current query as a favorite",
+        key: KeyCode::Char('S'),
+        modifiers: KeyModifiers::NONE,
+    },
+    PaletteAction {
+        label: "Favorites",
+        description: "Browse saved (favorite) queries",
+        key: KeyCode::Char('F'),
+        modifiers: KeyModifiers::NONE,
+    },
+    PaletteAction {
+        label: "Open file",
+        description: "Open a file as a new tab",
+        key: KeyCode::Char('o'),
+        modifiers: KeyModifiers::NONE,
+    },
+    PaletteAction {
+        label: "Clear query",
+        description: "Clear the current query",
+        key: KeyCode::Char('l'),
+        modifiers: KeyModifiers::CONTROL,
+    },
+    PaletteAction {
+        label: "Help",
+        description: "Show the keyboard shortcuts help screen",
+        key: KeyCode::Char('?'),
+        modifiers: KeyModifiers::NONE,
+    },
+    PaletteAction {
+        label: "Quit",
+        description: "Quit the application",
+        key: KeyCode::Char('q'),
+        modifiers: KeyModifiers::NONE,
+    },
+];
+
+/// Case-insensitive substring match.
+fn fuzzy_match(haystack: &str, needle: &str) -> bool {
+    needle.is_empty() || haystack.to_lowercase().contains(&needle.to_lowercase())
 }
 
 /// A named query saved to disk so it can be reused across sessions.
@@ -251,6 +356,19 @@ pub struct App {
     preview_split: bool,
     /// Active Tab-completion cycle, if the user is currently cycling through candidates
     completion_cycle: Option<CompletionCycle>,
+    /// Persisted UI settings (theme, hint bar visibility)
+    config: Config,
+    /// Split ratio (left pane percent) for the results/detail split view
+    detail_split_percent: u16,
+    /// Split ratio (source pane percent) for the preview/source split view
+    preview_split_percent: u16,
+    sidebar_split_percent: u16,
+    /// Current filter text typed in Mode::CommandPalette
+    palette_query: String,
+    /// Cursor position within `palette_query`
+    palette_cursor: usize,
+    /// Currently selected index among the filtered palette actions
+    palette_selected: usize,
 }
 
 /// Tracks an in-progress Tab-completion cycle so repeated Tab presses step
@@ -326,6 +444,13 @@ impl App {
             favorites_selected: 0,
             preview_split: false,
             completion_cycle: None,
+            config: crate::config::load(),
+            detail_split_percent: 40,
+            preview_split_percent: 50,
+            sidebar_split_percent: 20,
+            palette_query: String::new(),
+            palette_cursor: 0,
+            palette_selected: 0,
         }
     }
 
@@ -458,6 +583,7 @@ impl App {
             Mode::Search => self.handle_search_mode_event(event),
             Mode::SaveQuery => self.handle_save_query_mode_event(event),
             Mode::Favorites => self.handle_favorites_mode_event(event),
+            Mode::CommandPalette => self.handle_command_palette_mode_event(event),
         }
     }
 
@@ -552,6 +678,25 @@ impl App {
                 (KeyCode::Char('F'), _) => {
                     self.favorites_selected = 0;
                     self.mode = Mode::Favorites;
+                }
+                // Open the command palette
+                (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
+                    self.palette_query.clear();
+                    self.palette_cursor = 0;
+                    self.palette_selected = 0;
+                    self.mode = Mode::CommandPalette;
+                }
+                (KeyCode::Char('<'), _) if self.show_tree_sidebar => {
+                    self.adjust_sidebar_split(-5);
+                }
+                (KeyCode::Char('>'), _) if self.show_tree_sidebar => {
+                    self.adjust_sidebar_split(5);
+                }
+                (KeyCode::Char('<'), _) if self.show_detail => {
+                    self.adjust_detail_split(-5);
+                }
+                (KeyCode::Char('>'), _) if self.show_detail => {
+                    self.adjust_detail_split(5);
                 }
                 // Switch tabs
                 (KeyCode::Right, _) | (KeyCode::Tab, _) => {
@@ -824,6 +969,105 @@ impl App {
         Ok(())
     }
 
+    /// Palette actions whose label or description fuzzy-matches `palette_query`.
+    pub fn filtered_palette_actions(&self) -> Vec<&'static PaletteAction> {
+        PALETTE_ACTIONS
+            .iter()
+            .filter(|action| {
+                fuzzy_match(action.label, &self.palette_query)
+                    || fuzzy_match(action.description, &self.palette_query)
+            })
+            .collect()
+    }
+
+    pub fn palette_query(&self) -> &str {
+        &self.palette_query
+    }
+
+    pub fn palette_cursor(&self) -> usize {
+        self.palette_cursor
+    }
+
+    pub fn palette_selected(&self) -> usize {
+        self.palette_selected
+    }
+
+    /// Replays the action's keypress through the normal-mode handler, so
+    /// behavior isn't duplicated between the palette and key bindings.
+    fn run_palette_action(&mut self, action: &PaletteAction) -> miette::Result<()> {
+        self.mode = Mode::Normal;
+        self.handle_normal_mode_event(Event::Key(KeyEvent::new(action.key, action.modifiers)))
+    }
+
+    fn handle_command_palette_mode_event(&mut self, event: Event) -> miette::Result<()> {
+        if let Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event
+        {
+            match (code, modifiers) {
+                (KeyCode::Esc, _) => {
+                    self.mode = Mode::Normal;
+                }
+                (KeyCode::Enter, _) => {
+                    let matches = self.filtered_palette_actions();
+                    if let Some(action) = matches.get(self.palette_selected).copied() {
+                        self.run_palette_action(action)?;
+                    } else {
+                        self.mode = Mode::Normal;
+                    }
+                }
+                (KeyCode::Down, _) | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                    let len = self.filtered_palette_actions().len();
+                    if len > 0 {
+                        self.palette_selected = (self.palette_selected + 1) % len;
+                    }
+                }
+                (KeyCode::Up, _) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                    let len = self.filtered_palette_actions().len();
+                    if len > 0 {
+                        self.palette_selected = if self.palette_selected == 0 {
+                            len - 1
+                        } else {
+                            self.palette_selected - 1
+                        };
+                    }
+                }
+                (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                    self.palette_query.insert(self.palette_cursor, c);
+                    self.palette_cursor += 1;
+                    self.palette_selected = 0;
+                }
+                (KeyCode::Backspace, _) if self.palette_cursor > 0 => {
+                    self.palette_query.remove(self.palette_cursor - 1);
+                    self.palette_cursor -= 1;
+                    self.palette_selected = 0;
+                }
+                (KeyCode::Delete, _) if self.palette_cursor < self.palette_query.len() => {
+                    self.palette_query.remove(self.palette_cursor);
+                    self.palette_selected = 0;
+                }
+                (KeyCode::Left, _) if self.palette_cursor > 0 => {
+                    self.palette_cursor -= 1;
+                }
+                (KeyCode::Right, _) if self.palette_cursor < self.palette_query.len() => {
+                    self.palette_cursor += 1;
+                }
+                (KeyCode::Home, _) => {
+                    self.palette_cursor = 0;
+                }
+                (KeyCode::End, _) => {
+                    self.palette_cursor = self.palette_query.len();
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
     fn handle_tree_view_mode_event(&mut self, event: Event) -> miette::Result<()> {
         if let Event::Mouse(mouse_event) = event {
             match mouse_event.kind {
@@ -902,8 +1146,11 @@ impl App {
                 // Incremental search within the tree
                 (KeyCode::Char('/'), _) => {
                     self.search_return_mode = Mode::TreeView;
-                    self.search_origin_idx =
-                        self.tree_view.as_ref().map(|t| t.selected_index()).unwrap_or(0);
+                    self.search_origin_idx = self
+                        .tree_view
+                        .as_ref()
+                        .map(|t| t.selected_index())
+                        .unwrap_or(0);
                     self.search_query.clear();
                     self.search_cursor = 0;
                     self.mode = Mode::Search;
@@ -1096,6 +1343,13 @@ impl App {
                 (KeyCode::Char('s'), _) => {
                     self.preview_split = !self.preview_split;
                 }
+                // Adjust the source/preview split ratio
+                (KeyCode::Char('<'), _) if self.preview_split => {
+                    self.adjust_preview_split(-5);
+                }
+                (KeyCode::Char('>'), _) if self.preview_split => {
+                    self.adjust_preview_split(5);
+                }
                 _ => {}
             }
             self.clamp_preview_scroll();
@@ -1107,6 +1361,67 @@ impl App {
     /// Whether the preview shows raw source side-by-side with the rendered output
     pub fn preview_split(&self) -> bool {
         self.preview_split
+    }
+
+    /// The active color theme, derived from persisted config.
+    pub fn theme(&self) -> Theme {
+        Theme::from_name(self.config.theme)
+    }
+
+    pub fn theme_name(&self) -> ThemeName {
+        self.config.theme
+    }
+
+    /// Session-only theme override (e.g. `--theme`); does not touch config.toml.
+    pub fn set_theme_name(&mut self, name: ThemeName) {
+        self.config.theme = name;
+    }
+
+    /// Whether the persistent, mode-specific key-hint bar is shown above the status line.
+    pub fn show_hint_bar(&self) -> bool {
+        self.config.show_hint_bar
+    }
+
+    /// Session-only hint-bar override (e.g. `--no-hints`); does not touch config.toml.
+    pub fn set_show_hint_bar(&mut self, show: bool) {
+        self.config.show_hint_bar = show;
+    }
+
+    /// Percentage width of the results list in the results/detail split view.
+    pub fn detail_split_percent(&self) -> u16 {
+        self.detail_split_percent
+    }
+
+    /// Percentage width of the source pane in the preview/source split view.
+    pub fn preview_split_percent(&self) -> u16 {
+        self.preview_split_percent
+    }
+
+    pub fn sidebar_split_percent(&self) -> u16 {
+        self.sidebar_split_percent
+    }
+
+    /// Widen/narrow the results pane relative to the detail pane, in 5% steps.
+    fn adjust_detail_split(&mut self, delta: i16) {
+        self.detail_split_percent = self
+            .detail_split_percent
+            .saturating_add_signed(delta)
+            .clamp(15, 85);
+    }
+
+    /// Widen/narrow the source pane relative to the rendered preview, in 5% steps.
+    fn adjust_preview_split(&mut self, delta: i16) {
+        self.preview_split_percent = self
+            .preview_split_percent
+            .saturating_add_signed(delta)
+            .clamp(15, 85);
+    }
+
+    fn adjust_sidebar_split(&mut self, delta: i16) {
+        self.sidebar_split_percent = self
+            .sidebar_split_percent
+            .saturating_add_signed(delta)
+            .clamp(10, 50);
     }
 
     /// Get the current preview scroll offset (in rendered lines)
@@ -1570,6 +1885,26 @@ impl App {
         self.completion_cycle.as_ref().map_or(0, |c| c.index)
     }
 
+    /// Remaining characters of the top completion candidate, for inline
+    /// "ghost text". `None` unless the cursor is at the end of the query
+    /// (otherwise the suggestion would overlap text after the cursor).
+    pub fn ghost_suffix(&self) -> Option<String> {
+        if self.completion_cycle.is_some() || self.cursor_position != self.query.len() {
+            return None;
+        }
+        let (start, end) = Self::word_range_at_cursor(&self.query, self.cursor_position);
+        let word = &self.query[start..end];
+        if word.is_empty() {
+            return None;
+        }
+        let top = self.query_completions().into_iter().next()?;
+        if top.0.len() > word.len() {
+            Some(top.0[word.len()..].to_string())
+        } else {
+            None
+        }
+    }
+
     fn handle_search_mode_event(&mut self, event: Event) -> miette::Result<()> {
         if let Event::Key(KeyEvent {
             code,
@@ -1691,7 +2026,8 @@ impl App {
         match self.search_return_mode {
             Mode::TreeView => {
                 if let Some(tree_view) = &mut self.tree_view
-                    && let Some(start) = step(tree_view.selected_index(), tree_view.items().len(), forward)
+                    && let Some(start) =
+                        step(tree_view.selected_index(), tree_view.items().len(), forward)
                     && let Some(idx) = tree_view.find_match(start, forward, &term)
                 {
                     tree_view.set_selected_index(idx);
@@ -1699,7 +2035,8 @@ impl App {
             }
             _ => {
                 let results = &self.active_doc().results;
-                let start = step(self.active_doc().selected_idx, results.len(), forward).unwrap_or(0);
+                let start =
+                    step(self.active_doc().selected_idx, results.len(), forward).unwrap_or(0);
                 if let Some((doc_idx, idx)) = Self::find_match_across_tabs(
                     &self.documents,
                     self.active_doc,
@@ -1778,7 +2115,11 @@ impl App {
                 (start_doc + doc_count - step) % doc_count
             };
             let results = &documents[doc_idx].results;
-            let start = if forward { 0 } else { results.len().saturating_sub(1) };
+            let start = if forward {
+                0
+            } else {
+                results.len().saturating_sub(1)
+            };
             if let Some(idx) = Self::find_match_idx(results, start, forward, term) {
                 return Some((doc_idx, idx));
             }
@@ -1823,8 +2164,7 @@ impl App {
                             query: self.query.clone(),
                         });
                         if let Err(err) = crate::favorites::save(&self.saved_queries) {
-                            self.transient_error =
-                                Some(format!("Could not save query: {err}"));
+                            self.transient_error = Some(format!("Could not save query: {err}"));
                         }
                     }
                     self.mode = Mode::Normal;
@@ -3414,5 +3754,130 @@ mod tests {
         assert_eq!(app.mode(), Mode::Normal);
         // Esc cancels without saving.
         assert!(!app.saved_queries().iter().any(|q| q.name == "my query"));
+    }
+
+    #[test]
+    fn test_ctrl_k_opens_command_palette() {
+        let mut app = create_test_app();
+        app.handle_event(key_press(KeyCode::Char('k'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.mode(), Mode::CommandPalette);
+        assert!(!app.filtered_palette_actions().is_empty());
+    }
+
+    #[test]
+    fn test_command_palette_filters_by_fuzzy_match() {
+        let mut app = create_test_app();
+        app.handle_event(key_press(KeyCode::Char('k'), KeyModifiers::CONTROL))
+            .unwrap();
+
+        for c in "tree".chars() {
+            app.handle_event(key(KeyCode::Char(c))).unwrap();
+        }
+
+        let matches = app.filtered_palette_actions();
+        assert!(matches.iter().any(|a| a.label == "Tree view"));
+        assert!(!matches.iter().any(|a| a.label == "Quit"));
+    }
+
+    #[test]
+    fn test_command_palette_enter_runs_action() {
+        let mut app = create_test_app();
+        app.handle_event(key_press(KeyCode::Char('k'), KeyModifiers::CONTROL))
+            .unwrap();
+        for c in "tree".chars() {
+            app.handle_event(key(KeyCode::Char(c))).unwrap();
+        }
+
+        app.handle_event(key(KeyCode::Enter)).unwrap();
+
+        assert_eq!(app.mode(), Mode::TreeView);
+    }
+
+    #[test]
+    fn test_command_palette_esc_cancels() {
+        let mut app = create_test_app();
+        app.handle_event(key_press(KeyCode::Char('k'), KeyModifiers::CONTROL))
+            .unwrap();
+        app.handle_event(key(KeyCode::Esc)).unwrap();
+        assert_eq!(app.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn test_ghost_suffix_suggests_top_completion_at_cursor_end() {
+        let mut app = create_test_app();
+        app.set_mode(Mode::Query);
+        app.set_query(".head".to_string());
+        app.set_cursor_position(5);
+
+        assert_eq!(app.ghost_suffix().as_deref(), Some("ing"));
+    }
+
+    #[test]
+    fn test_ghost_suffix_none_when_cursor_not_at_end() {
+        let mut app = create_test_app();
+        app.set_mode(Mode::Query);
+        app.set_query(".heading extra".to_string());
+        app.set_cursor_position(5);
+
+        assert_eq!(app.ghost_suffix(), None);
+    }
+
+    #[test]
+    fn test_detail_split_adjust_clamped() {
+        let mut app = create_test_app();
+        app.handle_event(key(KeyCode::Char('d'))).unwrap();
+        assert!(app.show_detail());
+        assert_eq!(app.detail_split_percent(), 40);
+
+        for _ in 0..20 {
+            app.handle_event(key(KeyCode::Char('>'))).unwrap();
+        }
+        assert_eq!(app.detail_split_percent(), 85);
+
+        for _ in 0..20 {
+            app.handle_event(key(KeyCode::Char('<'))).unwrap();
+        }
+        assert_eq!(app.detail_split_percent(), 15);
+    }
+
+    #[test]
+    fn test_sidebar_split_adjust_clamped() {
+        let mut app = create_test_app();
+        app.handle_event(key(KeyCode::Char('s'))).unwrap();
+        assert!(app.show_tree_sidebar());
+        assert_eq!(app.sidebar_split_percent(), 20);
+
+        for _ in 0..20 {
+            app.handle_event(key(KeyCode::Char('>'))).unwrap();
+        }
+        assert_eq!(app.sidebar_split_percent(), 50);
+
+        for _ in 0..20 {
+            app.handle_event(key(KeyCode::Char('<'))).unwrap();
+        }
+        assert_eq!(app.sidebar_split_percent(), 10);
+    }
+
+    #[test]
+    fn test_split_resize_prioritizes_sidebar_over_detail() {
+        let mut app = create_test_app();
+        app.handle_event(key(KeyCode::Char('s'))).unwrap();
+        app.handle_event(key(KeyCode::Char('d'))).unwrap();
+        assert!(app.show_tree_sidebar());
+        assert!(app.show_detail());
+
+        app.handle_event(key(KeyCode::Char('>'))).unwrap();
+
+        assert_eq!(app.sidebar_split_percent(), 25);
+        assert_eq!(app.detail_split_percent(), 40);
+    }
+
+    #[test]
+    fn test_theme_override_does_not_persist() {
+        let mut app = create_test_app();
+        assert_eq!(app.theme_name(), ThemeName::Dark);
+        app.set_theme_name(ThemeName::Light);
+        assert_eq!(app.theme_name(), ThemeName::Light);
     }
 }

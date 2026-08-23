@@ -268,7 +268,11 @@ fn is_table_separator(line: &str) -> bool {
     })
 }
 
-fn table_row_spans(raw: &str, cell_style: Style, defs: &HashMap<String, String>) -> Vec<Span<'static>> {
+fn table_row_spans(
+    raw: &str,
+    cell_style: Style,
+    defs: &HashMap<String, String>,
+) -> Vec<Span<'static>> {
     let cells: Vec<&str> = raw.trim().trim_matches('|').split('|').collect();
     let mut spans = Vec::new();
     for (idx, cell) in cells.iter().enumerate() {
@@ -500,7 +504,11 @@ fn parse_inline(text: &str, base: Style, defs: &HashMap<String, String>) -> Vec<
             && !inner.is_empty()
         {
             flush(&mut buf, &mut spans, base);
-            spans.extend(parse_inline(&inner, base.add_modifier(Modifier::BOLD), defs));
+            spans.extend(parse_inline(
+                &inner,
+                base.add_modifier(Modifier::BOLD),
+                defs,
+            ));
             i += consumed;
             continue;
         }
@@ -510,7 +518,11 @@ fn parse_inline(text: &str, base: Style, defs: &HashMap<String, String>) -> Vec<
             && !inner.is_empty()
         {
             flush(&mut buf, &mut spans, base);
-            spans.extend(parse_inline(&inner, base.add_modifier(Modifier::ITALIC), defs));
+            spans.extend(parse_inline(
+                &inner,
+                base.add_modifier(Modifier::ITALIC),
+                defs,
+            ));
             i += consumed;
             continue;
         }

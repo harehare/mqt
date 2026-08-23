@@ -13,6 +13,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Mode};
+use crate::theme::Theme;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Break `line` into chunks of at most `width` display columns, preserving
@@ -49,7 +50,7 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
     }
     constraints.push(Constraint::Length(3)); // Query input / title bar
     constraints.push(Constraint::Min(0)); // Results area
-    constraints.push(Constraint::Length(1)); // Status line
+    constraints.push(Constraint::Length(1)); // Status line (+ key hints)
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -86,7 +87,13 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
     match display_mode {
         Mode::TreeView => {
             if let Some(tree_view) = app.tree_view() {
-                tree_view.render(frame, results_area);
+                let crumbs = tree_view.breadcrumb();
+                let title = if crumbs.is_empty() {
+                    "Document Tree".to_string()
+                } else {
+                    format!("Document Tree - {}", crumbs.join(" \u{203a} "))
+                };
+                tree_view.render_with_title(frame, results_area, &title);
             }
         }
         Mode::Preview => {
@@ -98,11 +105,12 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
         _ => {
             // Show sidebar if enabled
             if app.show_tree_sidebar() && app.sidebar_tree_view().is_some() {
+                let sidebar = app.sidebar_split_percent();
                 let main_chunks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([
-                        Constraint::Percentage(20), // Sidebar
-                        Constraint::Percentage(80), // Main content
+                        Constraint::Percentage(sidebar),        // Sidebar
+                        Constraint::Percentage(100 - sidebar), // Main content
                     ])
                     .split(results_area);
 
@@ -113,11 +121,12 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
 
                 // Draw main content area (results and/or detail)
                 if app.show_detail() && !app.results().is_empty() {
+                    let left = app.detail_split_percent();
                     let detail_chunks = Layout::default()
                         .direction(Direction::Horizontal)
                         .constraints([
-                            Constraint::Percentage(40), // Results list
-                            Constraint::Percentage(60), // Detail view
+                            Constraint::Percentage(left),       // Results list
+                            Constraint::Percentage(100 - left), // Detail view
                         ])
                         .split(main_chunks[1]);
 
@@ -129,11 +138,12 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
             } else {
                 // No sidebar - original layout
                 if app.show_detail() && !app.results().is_empty() {
+                    let left = app.detail_split_percent();
                     let detail_chunks = Layout::default()
                         .direction(Direction::Horizontal)
                         .constraints([
-                            Constraint::Percentage(40), // Results list
-                            Constraint::Percentage(60), // Detail view
+                            Constraint::Percentage(left),       // Results list
+                            Constraint::Percentage(100 - left), // Detail view
                         ])
                         .split(results_area);
 
@@ -161,12 +171,109 @@ pub fn draw_ui(frame: &mut Frame, app: &App) {
     }
 
     if app.mode() == Mode::Help {
-        draw_help_screen(frame);
+        draw_help_screen(frame, app);
     }
+
+    if app.mode() == Mode::CommandPalette {
+        draw_command_palette(frame, app);
+    }
+}
+
+/// Mode-specific key hints folded into the left side of the status line
+/// (toggle with `show_hint_bar` in config.toml, or `--no-hints`).
+fn hint_text(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Normal => {
+            ": query  t tree  p preview  s sidebar  d detail  y/Y copy  / search  Ctrl+K palette  ? help"
+        }
+        Mode::Query => "Enter run  Esc cancel  \u{2191}/\u{2193} history  Tab complete",
+        Mode::TreeView => "j/k move  Enter/Space expand  / search  Esc exit",
+        Mode::Preview => "j/k scroll  s split  </> resize  g/G top/bottom  Esc exit",
+        Mode::Search => "Enter confirm  Esc cancel",
+        Mode::SaveQuery => "Enter save  Esc cancel",
+        Mode::Favorites => "Enter run  d delete  Esc close",
+        Mode::CommandPalette => "type to filter  \u{2191}/\u{2193} select  Enter run  Esc close",
+        Mode::OpenFile => "Enter open  Esc cancel",
+        Mode::Help => "any key to close",
+    }
+}
+
+/// Command palette overlay: a fuzzy-filterable list of app actions (Ctrl+K).
+fn draw_command_palette(frame: &mut Frame, app: &App) {
+    let theme = app.theme();
+    let frame_area = frame.area();
+    let width = frame_area.width.clamp(30, 70).min(frame_area.width);
+    let height = frame_area.height.clamp(8, 16).min(frame_area.height);
+    let x = (frame_area.width.saturating_sub(width)) / 2;
+    let y = (frame_area.height.saturating_sub(height)) / 3;
+    let area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, area);
+
+    let outer = Block::default()
+        .title("Command Palette")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded);
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+
+    let query_line = Paragraph::new(Line::from(vec![
+        Span::styled("> ", Style::default().fg(theme.accent)),
+        Span::styled(app.palette_query(), Style::default().fg(theme.accent)),
+    ]));
+    frame.render_widget(query_line, chunks[0]);
+    frame.set_cursor_position(Position::new(
+        chunks[0].x + 2 + app.palette_cursor() as u16,
+        chunks[0].y,
+    ));
+
+    let matches = app.filtered_palette_actions();
+    let selected = app.palette_selected();
+
+    if matches.is_empty() {
+        let empty = Paragraph::new("No matching command").style(Style::default().fg(theme.muted));
+        frame.render_widget(empty, chunks[1]);
+        return;
+    }
+
+    let items: Vec<ListItem> = matches
+        .iter()
+        .enumerate()
+        .map(|(i, action)| {
+            let style = if i == selected {
+                Style::default()
+                    .fg(theme.selection_fg)
+                    .bg(theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.selector)
+            };
+            let desc_style = if i == selected {
+                style
+            } else {
+                Style::default().fg(theme.muted)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{:<20}", action.label), style),
+                Span::styled(action.description, desc_style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(list, chunks[1], &mut state);
 }
 
 /// Draw the tab bar showing all open documents, with the active one highlighted.
 fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
     let titles: Vec<Line> = app
         .document_names()
         .into_iter()
@@ -182,8 +289,8 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
         .select(app.active_doc_index())
         .highlight_style(
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+                .fg(theme.selection_fg)
+                .bg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )
         .divider(Span::raw(" | "));
@@ -199,7 +306,7 @@ fn draw_open_file_input(frame: &mut Frame, app: &App, area: Rect) {
         .style(Style::default());
 
     let open_file_text = Paragraph::new(app.open_file_path())
-        .style(Style::default().fg(Color::Yellow))
+        .style(Style::default().fg(app.theme().accent))
         .block(open_file_block);
 
     frame.render_widget(open_file_text, area);
@@ -217,7 +324,7 @@ fn draw_search_input(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL);
 
     let text = Paragraph::new(app.search_query())
-        .style(Style::default().fg(Color::Yellow))
+        .style(Style::default().fg(app.theme().accent))
         .block(block);
 
     frame.render_widget(text, area);
@@ -235,7 +342,7 @@ fn draw_save_query_input(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL);
 
     let text = Paragraph::new(app.save_query_name())
-        .style(Style::default().fg(Color::Yellow))
+        .style(Style::default().fg(app.theme().accent))
         .block(block);
 
     frame.render_widget(text, area);
@@ -245,6 +352,7 @@ fn draw_save_query_input(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_favorites_list(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
     let saved = app.saved_queries();
     let block = Block::default()
         .title("Favorites (Enter to run, d to delete, Esc to close)")
@@ -252,7 +360,7 @@ fn draw_favorites_list(frame: &mut Frame, app: &App, area: Rect) {
 
     if saved.is_empty() {
         let text = Paragraph::new("No saved queries yet - press 'S' to save the current query")
-            .style(Style::default().fg(Color::DarkGray))
+            .style(Style::default().fg(theme.muted))
             .block(block);
         frame.render_widget(text, area);
         return;
@@ -266,14 +374,22 @@ fn draw_favorites_list(frame: &mut Frame, app: &App, area: Rect) {
         .map(|(i, saved)| {
             let is_selected = i == app.favorites_selected();
             let style = if is_selected {
-                Style::default().fg(Color::Black).bg(Color::White)
+                Style::default()
+                    .fg(theme.selection_fg)
+                    .bg(theme.selection_bg)
             } else {
                 Style::default()
             };
-            let name_style = style
-                .add_modifier(Modifier::BOLD)
-                .fg(if is_selected { Color::Black } else { Color::Cyan });
-            let query_style = style.fg(if is_selected { Color::Black } else { Color::Gray });
+            let name_style = style.add_modifier(Modifier::BOLD).fg(if is_selected {
+                theme.selection_fg
+            } else {
+                theme.selector
+            });
+            let query_style = style.fg(if is_selected {
+                theme.selection_fg
+            } else {
+                theme.muted
+            });
 
             let text = format!("{}  {}", saved.name, saved.query);
             let name_len = saved.name.chars().count();
@@ -307,32 +423,39 @@ fn draw_favorites_list(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 const QUERY_KEYWORDS: &[&str] = &[
-    "and", "as", "break", "catch", "continue", "def", "do", "elif", "else", "end", "fn",
-    "foreach", "if", "import", "include", "let", "loop", "match", "module", "nodes", "none",
-    "not", "or", "self", "true", "false", "try", "unless", "until", "var", "while",
+    "and", "as", "break", "catch", "continue", "def", "do", "elif", "else", "end", "fn", "foreach",
+    "if", "import", "include", "let", "loop", "match", "module", "nodes", "none", "not", "or",
+    "self", "true", "false", "try", "unless", "until", "var", "while",
 ];
 
 /// Best-effort tokenizer for coloring the query bar as the user types.
 /// Not a real lexer (mq-lang's isn't public) — just close enough for display.
-fn highlight_query(query: &str) -> Vec<Span<'static>> {
+fn highlight_query(query: &str, theme: &Theme) -> Vec<Span<'static>> {
     let chars: Vec<char> = query.chars().collect();
     let mut spans = Vec::new();
     let mut i = 0;
 
-    let selector_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-    let keyword_style = Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD);
-    let string_style = Style::default().fg(Color::Green);
-    let number_style = Style::default().fg(Color::LightMagenta);
-    let function_style = Style::default().fg(Color::LightBlue);
-    let pipe_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-    let comment_style = Style::default().fg(Color::DarkGray);
-    let default_style = Style::default().fg(Color::Yellow);
+    let selector_style = Style::default()
+        .fg(theme.selector)
+        .add_modifier(Modifier::BOLD);
+    let keyword_style = Style::default()
+        .fg(theme.keyword)
+        .add_modifier(Modifier::BOLD);
+    let string_style = Style::default().fg(theme.string_lit);
+    let number_style = Style::default().fg(theme.number_lit);
+    let function_style = Style::default().fg(theme.function);
+    let pipe_style = Style::default().fg(theme.pipe).add_modifier(Modifier::BOLD);
+    let comment_style = Style::default().fg(theme.comment);
+    let default_style = Style::default().fg(theme.accent);
 
     while i < chars.len() {
         let c = chars[i];
 
         if c == '#' {
-            spans.push(Span::styled(chars[i..].iter().collect::<String>(), comment_style));
+            spans.push(Span::styled(
+                chars[i..].iter().collect::<String>(),
+                comment_style,
+            ));
             break;
         }
 
@@ -350,7 +473,10 @@ fn highlight_query(query: &str) -> Vec<Span<'static>> {
                     break;
                 }
             }
-            spans.push(Span::styled(chars[start..i].iter().collect::<String>(), string_style));
+            spans.push(Span::styled(
+                chars[start..i].iter().collect::<String>(),
+                string_style,
+            ));
             continue;
         }
 
@@ -359,7 +485,10 @@ fn highlight_query(query: &str) -> Vec<Span<'static>> {
             while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
                 i += 1;
             }
-            spans.push(Span::styled(chars[start..i].iter().collect::<String>(), number_style));
+            spans.push(Span::styled(
+                chars[start..i].iter().collect::<String>(),
+                number_style,
+            ));
             continue;
         }
 
@@ -371,7 +500,10 @@ fn highlight_query(query: &str) -> Vec<Span<'static>> {
             {
                 i += 1;
             }
-            spans.push(Span::styled(chars[start..i].iter().collect::<String>(), selector_style));
+            spans.push(Span::styled(
+                chars[start..i].iter().collect::<String>(),
+                selector_style,
+            ));
             continue;
         }
 
@@ -408,32 +540,52 @@ fn highlight_query(query: &str) -> Vec<Span<'static>> {
         {
             i += 1;
         }
-        spans.push(Span::styled(chars[start..i].iter().collect::<String>(), default_style));
+        spans.push(Span::styled(
+            chars[start..i].iter().collect::<String>(),
+            default_style,
+        ));
     }
 
     spans
 }
 
 fn draw_query_input(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
     let has_error = app.error_msg().is_some();
     let mut query_block = Block::default().title("Query").borders(Borders::ALL);
 
     if let Some(error) = app.error_msg() {
         query_block = query_block.title_bottom(
-            Line::from(Span::styled(error.to_string(), Style::default().fg(Color::Red)))
-                .alignment(Alignment::Left),
+            Line::from(Span::styled(
+                error.to_string(),
+                Style::default().fg(Color::Red),
+            ))
+            .alignment(Alignment::Left),
         );
     }
 
     // A broken query turns fully red/underlined; otherwise it's syntax-highlighted.
-    let spans = if has_error {
+    let mut spans = if has_error {
         vec![Span::styled(
             app.query().to_string(),
-            Style::default().fg(Color::Red).add_modifier(Modifier::UNDERLINED),
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::UNDERLINED),
         )]
     } else {
-        highlight_query(app.query())
+        highlight_query(app.query(), &theme)
     };
+
+    // Inline "ghost text": the remainder of the top completion candidate,
+    // shown dimmed after the cursor (fish-shell style autosuggestion).
+    if !has_error && let Some(suffix) = app.ghost_suffix() {
+        spans.push(Span::styled(
+            suffix,
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::ITALIC),
+        ));
+    }
 
     let query_text = Paragraph::new(Line::from(spans)).block(query_block);
 
@@ -448,6 +600,7 @@ fn draw_query_input(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Completion suggestions popup under the query box; Tab accepts the first entry.
 fn draw_completions_popup(frame: &mut Frame, app: &App, header_area: Rect) {
+    let theme = app.theme();
     let completions = app.active_completions();
     if completions.is_empty() {
         return;
@@ -471,15 +624,15 @@ fn draw_completions_popup(frame: &mut Frame, app: &App, header_area: Rect) {
         .map(|(i, (name, description))| {
             let style = if i == selected {
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
+                    .fg(theme.selection_fg)
+                    .bg(theme.accent)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme.selector)
             };
             ListItem::new(Line::from(vec![
                 Span::styled(format!(" {name} "), style),
-                Span::styled(format!(" {description}"), Style::default().fg(Color::Gray)),
+                Span::styled(format!(" {description}"), Style::default().fg(theme.muted)),
             ]))
         })
         .collect();
@@ -496,6 +649,7 @@ fn draw_completions_popup(frame: &mut Frame, app: &App, header_area: Rect) {
 }
 
 fn draw_results_list(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
     let results = app.results();
 
     let results_block = Block::default().title("Results").borders(Borders::ALL);
@@ -508,7 +662,7 @@ fn draw_results_list(frame: &mut Frame, app: &App, area: Rect) {
         };
 
         let empty_text = Paragraph::new(text)
-            .style(Style::default().fg(Color::DarkGray))
+            .style(Style::default().fg(theme.muted))
             .block(results_block);
 
         frame.render_widget(empty_text, area);
@@ -553,18 +707,22 @@ fn draw_results_list(frame: &mut Frame, app: &App, area: Rect) {
             let is_selected = i >= selected_line && i < selected_end_line;
             let base_style = if is_markdown_header(value) {
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme.header)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
             let lines: Vec<Line> = wrap_to_width(value, wrap_width)
                 .iter()
-                .map(|segment| Line::from(highlight_matches(segment, search_term, base_style)))
+                .map(|segment| {
+                    Line::from(highlight_matches(segment, search_term, base_style, &theme))
+                })
                 .collect();
 
             ListItem::new(lines).style(if is_selected {
-                Style::default().fg(Color::Black).bg(Color::White)
+                Style::default()
+                    .fg(theme.selection_fg)
+                    .bg(theme.selection_bg)
             } else {
                 Style::default()
             })
@@ -654,7 +812,12 @@ fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Style every case-insensitive occurrence of `term` in `line` distinctly.
-fn highlight_matches(line: &str, term: Option<&str>, base_style: Style) -> Vec<Span<'static>> {
+fn highlight_matches(
+    line: &str,
+    term: Option<&str>,
+    base_style: Style,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
     let Some(term) = term else {
         return vec![Span::styled(line.to_string(), base_style)];
     };
@@ -672,8 +835,8 @@ fn highlight_matches(line: &str, term: Option<&str>, base_style: Style) -> Vec<S
         spans.push(Span::styled(
             line[match_start..match_end].to_string(),
             base_style
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+                .fg(theme.match_fg)
+                .bg(theme.match_bg)
                 .add_modifier(Modifier::BOLD),
         ));
         pos = match_end;
@@ -694,8 +857,10 @@ fn is_markdown_header(line: &str) -> bool {
     trimmed.starts_with('#') && trimmed.chars().nth(1).is_some_and(|c| c == ' ' || c == '#')
 }
 
-/// Draw the status line at the bottom
+/// Draw the status line at the bottom, folding in the mode-specific key
+/// hints (when enabled) so the bottom bar stays a single line.
 fn draw_status_line(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
     let exec_time = app.last_exec_time();
     let results_count = app.results().len();
 
@@ -707,38 +872,67 @@ fn draw_status_line(frame: &mut Frame, app: &App, area: Rect) {
 
     let watch_info = if app.watch() { "👀 watching | " } else { "" };
 
+    let show_hints = app.show_hint_bar();
     let status = format!(
-        "{}{}{} results | Execution time: {:.2}ms | Press q to quit",
+        "{}{}{} results | {:.2}ms{}",
         watch_info,
         doc_info,
         results_count,
-        exec_time.as_secs_f64() * 1000.0
+        exec_time.as_secs_f64() * 1000.0,
+        if show_hints { "" } else { " | Press q to quit" }
     );
 
-    let status_text = Paragraph::new(status).style(Style::default().fg(Color::DarkGray));
+    if !show_hints {
+        frame.render_widget(
+            Paragraph::new(status).style(Style::default().fg(theme.muted)),
+            area,
+        );
+        return;
+    }
 
-    frame.render_widget(status_text, area);
+    let display_mode = if app.mode() == Mode::Search {
+        app.search_return_mode()
+    } else {
+        app.mode()
+    };
+    let status_width = status.width() as u16;
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(status_width)])
+        .split(area);
+
+    frame.render_widget(
+        Paragraph::new(hint_text(display_mode)).style(Style::default().fg(theme.muted)),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new(status)
+            .style(Style::default().fg(theme.muted))
+            .alignment(Alignment::Right),
+        chunks[1],
+    );
 }
 
 fn draw_title_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
     let title = app.filename().unwrap_or("None");
     let title_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
 
     let title_spans = vec![
-        Span::styled(title, Style::default().fg(Color::Green).bold()),
+        Span::styled(title, Style::default().fg(theme.success).bold()),
         Span::raw(" | "),
         Span::styled(
             app.mode().to_string(),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" | "),
         Span::styled(
             "Press 's' for sidebar, 't' for tree view, 'p' for preview, 'o' to open a file, '?' for help",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.muted),
         ),
     ];
 
@@ -756,8 +950,14 @@ fn draw_detail_view(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let selected_item = &results[app.selected_idx()];
+    let title = format!(
+        "Detail View - {}/{} \u{203a} {}",
+        app.selected_idx() + 1,
+        results.len(),
+        node_type_label(selected_item)
+    );
     let detail_block = Block::default()
-        .title("Detail View")
+        .title(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
         .padding(Padding::new(1, 1, 1, 1));
@@ -770,6 +970,49 @@ fn draw_detail_view(frame: &mut Frame, app: &App, area: Rect) {
         .wrap(Wrap { trim: false });
 
     frame.render_widget(detail_text, area);
+}
+
+/// Short variant name for a node, used in the detail view's breadcrumb title.
+fn node_type_label(node: &mq_markdown::Node) -> &'static str {
+    use mq_markdown::Node;
+    match node {
+        Node::Heading(_) => "Heading",
+        Node::List(_) => "List",
+        Node::Code(_) => "Code Block",
+        Node::CodeInline(_) => "Inline Code",
+        Node::Blockquote(_) => "Blockquote",
+        Node::Strong(_) => "Strong",
+        Node::Emphasis(_) => "Emphasis",
+        Node::Delete(_) => "Strikethrough",
+        Node::Link(_) => "Link",
+        Node::LinkRef(_) => "Link Ref",
+        Node::Image(_) => "Image",
+        Node::ImageRef(_) => "Image Ref",
+        Node::Text(_) => "Text",
+        Node::HorizontalRule(_) => "Horizontal Rule",
+        Node::TableAlign(_) => "Table Header",
+        Node::TableRow(_) => "Table Row",
+        Node::TableCell(_) => "Table Cell",
+        Node::Break(_) => "Line Break",
+        Node::Html(_) => "HTML",
+        Node::Math(_) => "Math",
+        Node::MathInline(_) => "Inline Math",
+        Node::Yaml(_) => "YAML",
+        Node::Toml(_) => "TOML",
+        Node::Fragment(_) => "Fragment",
+        Node::Footnote(_) => "Footnote",
+        Node::FootnoteRef(_) => "Footnote Ref",
+        Node::Definition(_) => "Definition",
+        Node::MdxFlowExpression(_) => "MDX Flow Expression",
+        Node::MdxJsxFlowElement(_) => "MDX JSX Element",
+        Node::MdxJsxTextElement(_) => "MDX JSX Text",
+        Node::MdxTextExpression(_) => "MDX Text Expression",
+        Node::MdxJsEsm(_) => "MDX JS ESM",
+        Node::Empty => "Empty",
+        Node::Callout(_) => "Callout",
+        Node::Embed(_) => "Embed",
+        Node::WikiLink(_) => "WikiLink",
+    }
 }
 
 fn max_line_width(lines: &[Line]) -> u16 {
@@ -785,7 +1028,7 @@ fn max_line_width(lines: &[Line]) -> u16 {
         .unwrap_or(0) as u16
 }
 
-fn draw_help_screen(frame: &mut Frame) {
+fn draw_help_screen(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
     let help_block = Block::default()
@@ -936,6 +1179,14 @@ fn draw_help_screen(frame: &mut Frame) {
             Span::styled("Ctrl+l", Style::default().fg(Color::Yellow)),
             Span::raw(" - Clear query"),
         ]),
+        Line::from(vec![
+            Span::styled("Ctrl+k", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Open command palette"),
+        ]),
+        Line::from(vec![
+            Span::styled("</>", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Resize sidebar/detail/preview split"),
+        ]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Tabs / Files",
@@ -1059,8 +1310,30 @@ fn draw_help_screen(frame: &mut Frame) {
         ])
         .split(inner);
 
-    frame.render_widget(Paragraph::new(left_column).alignment(Alignment::Left), columns[0]);
-    frame.render_widget(Paragraph::new(right_column).alignment(Alignment::Left), columns[2]);
+    frame.render_widget(
+        Paragraph::new(left_column).alignment(Alignment::Left),
+        columns[0],
+    );
+    frame.render_widget(
+        Paragraph::new(right_column).alignment(Alignment::Left),
+        columns[2],
+    );
+
+    let footer = format!(
+        "Theme: {:?} | Hint bar: {} (config.toml)",
+        app.theme_name(),
+        if app.show_hint_bar() { "on" } else { "off" }
+    );
+    let footer_area = Rect::new(
+        help_area.x + 1,
+        help_area.y + help_area.height - 1,
+        help_area.width.saturating_sub(2),
+        1,
+    );
+    frame.render_widget(
+        Paragraph::new(footer).style(Style::default().fg(Color::DarkGray)),
+        footer_area,
+    );
 }
 
 fn draw_error_popup(frame: &mut Frame, error: &str) {
@@ -1106,7 +1379,8 @@ mod tests {
 
     #[test]
     fn test_highlight_query_classifies_tokens() {
-        let spans = highlight_query(r#".h | select(.depth == 1) # note"#);
+        let theme = Theme::dark();
+        let spans = highlight_query(r#".h | select(.depth == 1) # note"#, &theme);
         let plain: Vec<String> = spans.iter().map(|s| s.content.to_string()).collect();
 
         assert!(plain.contains(&".h".to_string()));
@@ -1117,15 +1391,16 @@ mod tests {
         assert!(plain.iter().any(|s| s.starts_with('#')));
 
         let selector_span = spans.iter().find(|s| s.content == ".h").unwrap();
-        assert_eq!(selector_span.style.fg, Some(Color::Cyan));
+        assert_eq!(selector_span.style.fg, Some(theme.selector));
 
         let function_span = spans.iter().find(|s| s.content == "select").unwrap();
-        assert_eq!(function_span.style.fg, Some(Color::LightBlue));
+        assert_eq!(function_span.style.fg, Some(theme.function));
     }
 
     #[test]
     fn test_highlight_query_string_literal_is_single_span() {
-        let spans = highlight_query(r#"select(.text == "hello world")"#);
+        let theme = Theme::dark();
+        let spans = highlight_query(r#"select(.text == "hello world")"#, &theme);
         assert!(spans.iter().any(|s| s.content == "\"hello world\""));
     }
 
@@ -1404,10 +1679,11 @@ mod tests {
     #[test]
     fn test_draw_help_screen_content() {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let app = create_test_app();
 
         terminal
             .draw(|frame| {
-                draw_help_screen(frame);
+                draw_help_screen(frame, &app);
             })
             .unwrap();
 
