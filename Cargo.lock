@@ -991,11 +991,11 @@ dependencies = [
 
 [[package]]
 name = "hashlink"
-version = "0.11.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea0b22561a9c04a7cb1a302c013e0259cd3b4bb619f145b32f72b8b4bcbed230"
+checksum = "32069d97bb81e38fa67eab65e3393bf804bb85969f2bc06bf13f64aef5aba248"
 dependencies = [
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -1503,9 +1503,9 @@ dependencies = [
 
 [[package]]
 name = "mq-lang"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbfbe4d2b80bb31fb0cb9a7920fdad8dd9ff4e22c8597c70a417faf6ca2c2321"
+checksum = "8d1df8de900c90b0945c51fa9857d845c78d1ea8529faa5888bc88949777a0e0"
 dependencies = [
  "ammonia",
  "base64 0.23.1",
@@ -1513,6 +1513,7 @@ dependencies = [
  "ciborium",
  "csv",
  "dirs",
+ "encoding_rs",
  "getrandom 0.4.3",
  "glob",
  "html-escape",
@@ -1549,9 +1550,9 @@ dependencies = [
 
 [[package]]
 name = "mq-macros"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6fc5e8ffbc8d011047722f6ffc6aa25c45d5f214475fed6ed4fa6d32c4e539c"
+checksum = "604efe88e489430780cc500c1990084c549f5198a48d190d91487d2f0d47e508"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1560,9 +1561,9 @@ dependencies = [
 
 [[package]]
 name = "mq-markdown"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2aa154069a69d3f8a52013d1cf12f37daa626f002c596489449ed8bad99632c7"
+checksum = "60b3228804efb8c2181f53306951ac77ea471fcb5812e8c44a1b6dfbdfdc8c77"
 dependencies = [
  "ego-tree",
  "itertools 0.15.0",
@@ -1572,15 +1573,15 @@ dependencies = [
  "scraper",
  "serde",
  "serde_json",
- "serde_yaml",
  "smol_str",
  "unicode-width 0.2.2",
  "url",
+ "yaml-rust2",
 ]
 
 [[package]]
 name = "mq-tui"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arboard",
  "clap",
@@ -2439,19 +2440,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
-]
-
-[[package]]
 name = "servo_arc"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2989,12 +2977,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-
-[[package]]
 name = "url"
 version = "2.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3435,9 +3417,9 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 
 [[package]]
 name = "yaml-rust2"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "631a50d867fafb7093e709d75aaee9e0e0d5deb934021fcea25ac2fe09edc51e"
+checksum = "c6edb26322e610d4f04b7cd34478317685d24d0999437e551fb97c5441151041"
 dependencies = [
  "arraydeque",
  "encoding_rs",

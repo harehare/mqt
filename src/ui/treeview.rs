@@ -548,6 +548,7 @@ mod tests {
             index: 0,
             level: 0,
             checked: None,
+            spread: false,
             start: None,
             position: None,
         });
@@ -642,6 +643,7 @@ mod tests {
             index: 0,
             level: 0,
             checked: None,
+            spread: false,
             start: None,
             position: None,
         });
@@ -718,6 +720,7 @@ mod tests {
             index: 0,
             level: 0,
             checked: None,
+            spread: false,
             start: None,
             position: None,
         });
@@ -733,6 +736,7 @@ mod tests {
             index: 0,
             level: 0,
             checked: None,
+            spread: false,
             start: None,
             position: None,
         });
@@ -1004,6 +1008,7 @@ mod tests {
             index: 0,
             level: 0,
             checked: None,
+            spread: false,
             start: None,
             position: None,
         });
@@ -1170,6 +1175,7 @@ mod tests {
                 index: 0,
                 level: 0,
                 checked: None,
+                spread: false,
                 start: None,
                 position: None,
             }),
