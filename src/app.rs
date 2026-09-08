@@ -1525,7 +1525,7 @@ impl App {
                                 doc.results = results
                                     .into_iter()
                                     .map(|runtime_value| match runtime_value {
-                                        mq_lang::RuntimeValue::Markdown(node, _) => *node,
+                                        mq_lang::RuntimeValue::Markdown(node, _) => (*node).clone(),
                                         _ => runtime_value.to_string().into(),
                                     })
                                     .collect();
